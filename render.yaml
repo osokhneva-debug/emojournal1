@@ -1,0 +1,81 @@
+# Render.com deployment configuration for EmoJournal Bot
+services:
+  - type: web
+    name: emojournal-bot
+    env: docker
+    plan: free
+    region: frankfurt  # Choose region closest to your users
+    branch: main
+    
+    # Docker configuration
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    
+    # Environment variables (set these in Render dashboard)
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false  # Set manually in dashboard
+      
+      - key: WEBHOOK_URL
+        value: https://emojournal-bot.onrender.com/webhook
+        # Replace 'emojournal-bot' with your actual service name
+      
+      - key: PORT
+        value: 10000
+      
+      - key: TZ
+        value: Europe/Moscow
+      
+      - key: DATABASE_URL
+        value: sqlite:///data/emojournal.db
+      
+      - key: PYTHONUNBUFFERED
+        value: 1
+    
+    # Health check configuration
+    healthCheckPath: /health
+    
+    # Resource limits for free tier
+    disk:
+      name: emojournal-data
+      mountPath: /app/data
+      sizeGB: 1
+    
+    # Auto-deploy settings
+    autoDeploy: true
+    
+    # Build configuration
+    buildFilter:
+      paths:
+        - app/**
+        - requirements.txt
+        - Dockerfile
+        - render.yaml
+      ignoredPaths:
+        - README.md
+        - .gitignore
+        - tests/**
+    
+    # Scaling (free tier = 1 instance max)
+    numInstances: 1
+    
+    # Custom build command (optional)
+    # buildCommand: echo "Building EmoJournal Bot..."
+    
+    # Custom start command (optional - uses Dockerfile CMD by default)
+    # startCommand: python -m app.main
+
+# Optional: Background worker for scheduled tasks
+# (Only needed if you separate scheduling from main app)
+# - type: worker
+#   name: emojournal-scheduler
+#   env: docker
+#   plan: free
+#   dockerfilePath: ./Dockerfile
+#   dockerContext: .
+#   startCommand: python -m app.scheduler_worker
+#   envVars:
+#     - fromService:
+#         type: web
+#         name: emojournal-bot
+#         envVarKey: TELEGRAM_BOT_TOKEN

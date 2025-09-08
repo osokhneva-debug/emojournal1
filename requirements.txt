@@ -1,0 +1,25 @@
+# EmoJournal Telegram Bot Requirements
+# Python 3.11+ compatible versions
+
+# Telegram Bot API
+python-telegram-bot[webhooks]==21.5
+
+# Database
+SQLAlchemy==2.0.23
+alembic==1.13.0
+
+# Scheduling
+APScheduler==3.10.4
+
+# Web server for webhooks  
+aiohttp==3.9.1
+
+# Data processing
+pandas==2.1.4
+
+# Timezone support (backport for older Python)
+backports.zoneinfo==0.2.1; python_version<"3.9"
+
+# Development and testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
