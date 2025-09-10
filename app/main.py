@@ -14,10 +14,10 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 from telegram.error import TelegramError
 
-from db import Database, User, Entry
-from scheduler import RandomScheduler
-from i18n import Texts
-from analysis import WeeklyAnalyzer
+from .db import Database, User, Entry
+from .scheduler import RandomScheduler
+from .i18n import Texts
+from .analysis import WeeklyAnalyzer
 
 # Configure logging
 logging.basicConfig(
