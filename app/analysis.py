@@ -12,7 +12,7 @@ import csv
 import io
 from collections import Counter
 
-from i18n import Texts, format_emotion_list, get_time_period_text, generate_insight
+from .i18n import Texts, format_emotion_list, get_time_period_text, generate_insight
 
 logger = logging.getLogger(__name__)
 
