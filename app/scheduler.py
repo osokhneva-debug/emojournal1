@@ -10,6 +10,7 @@ import asyncio
 from datetime import datetime, timedelta, time
 from typing import List, Optional
 import json
+from .db import Database
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
