@@ -451,5 +451,3 @@ if __name__ == "__main__":
     # Test formatting
     test_emotions = [("радость", 5), ("тревога", 3), ("усталость", 2)]
     print(f"Formatted emotions: {format_emotion_list(test_emotions)}")
-
-                '
