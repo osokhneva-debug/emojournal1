@@ -12,13 +12,12 @@ from typing import List, Optional
 import json
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.executors.asyncio import AsyncIOExecutor
 
 logger = logging.getLogger(__name__)
 
 class RandomScheduler:
-    """Handles random emotion ping scheduling with persistence"""
+    """Handles random emotion ping scheduling"""
     
     # Configuration constants
     WINDOW_START_HOUR = 9   # 09:00
@@ -32,11 +31,7 @@ class RandomScheduler:
         
     async def start(self):
         """Initialize and start the scheduler"""
-        # Configure job store to persist across restarts
-        jobstores = {
-            'default': SQLAlchemyJobStore(url=f"sqlite:///{self.db.db_path}")
-        }
-        
+        # Simplified scheduler without persistent job store
         executors = {
             'default': AsyncIOExecutor()
         }
@@ -47,7 +42,6 @@ class RandomScheduler:
         }
         
         self.scheduler = AsyncIOScheduler(
-            jobstores=jobstores,
             executors=executors,
             job_defaults=job_defaults,
             timezone='Europe/Moscow'  # Default timezone
@@ -235,9 +229,9 @@ class RandomScheduler:
                 except:
                     pass
                 
-                # Schedule ping
+                # Schedule ping - simplified version without database objects
                 self.scheduler.add_job(
-                    self._send_emotion_ping,
+                    self._send_simple_ping,
                     'date',
                     run_date=ping_datetime,
                     args=[user_id],
@@ -272,7 +266,7 @@ class RandomScheduler:
             job_id = f'ping_{user_id}_{tomorrow_str}_{i}'
             
             self.scheduler.add_job(
-                self._send_emotion_ping,
+                self._send_simple_ping,
                 'date',
                 run_date=ping_datetime,
                 args=[user_id],
@@ -295,10 +289,9 @@ class RandomScheduler:
         
         logger.info(f"Generated daily schedules for {len(active_users)} users")
     
-    async def _send_emotion_ping(self, user_id: int):
-        """Send emotion ping to user (called by scheduled jobs)"""
+    async def _send_simple_ping(self, user_id: int):
+        """Simplified ping function without complex dependencies"""
         try:
-            # Import here to avoid circular dependency - use relative import
             import os
             bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
             
@@ -316,14 +309,18 @@ class RandomScheduler:
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
-            # Use relative import
-            from .i18n import Texts
-            texts = Texts()
+            # Simple hardcoded text instead of importing
+            ping_text = """🌟 Как ты сейчас?
+
+Если хочется — выбери 1-2 слова или просто опиши своими словами.
+
+<i>Сам факт, что ты это заметишь и назовёшь, — уже шаг к ясности.</i>"""
             
             await bot.send_message(
                 chat_id=user.chat_id,
-                text=texts.EMOTION_PING,
-                reply_markup=reply_markup
+                text=ping_text,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
             )
             
             logger.info(f"Sent emotion ping to user {user_id}")
@@ -340,7 +337,7 @@ class RandomScheduler:
         job_id = f'snooze_{user_id}_{int(snooze_time.timestamp())}'
         
         self.scheduler.add_job(
-            self._send_emotion_ping,
+            self._send_simple_ping,
             'date',
             run_date=snooze_time,
             args=[user_id],
