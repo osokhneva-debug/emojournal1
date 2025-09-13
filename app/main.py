@@ -7,10 +7,11 @@ Emotion tracking bot with random scheduling and weekly analytics
 import logging
 import os
 import asyncio
+import json
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 from telegram.error import TelegramError
 
@@ -212,31 +213,6 @@ class EmoJournalBot:
             f"📅 Активных за неделю: {stats['active_weekly']}"
         )
     
-    async def emotion_ping(self, user_id: int):
-        """Send emotion check-in to user"""
-        try:
-            user = self.db.get_user(user_id)
-            if not user or user.paused:
-                return
-            
-            keyboard = [
-                [InlineKeyboardButton("Ответить", callback_data=f"respond_{user_id}")],
-                [InlineKeyboardButton("Отложить на 15 мин", callback_data=f"snooze_{user_id}")],
-                [InlineKeyboardButton("Пропустить сегодня", callback_data=f"skip_{user_id}")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            from telegram import Bot
-            bot = Bot(token=self.bot_token)
-            await bot.send_message(
-                chat_id=user.chat_id,
-                text=self.texts.EMOTION_PING,
-                reply_markup=reply_markup
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to send ping to user {user_id}: {e}")
-    
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle inline keyboard callbacks"""
         query = update.callback_query
@@ -276,10 +252,6 @@ class EmoJournalBot:
             self.texts.EMOTION_QUESTION,
             reply_markup=reply_markup
         )
-        
-        # Set user state for text input
-        context = {"user_id": user_id, "step": "emotion_input"}
-        # Store in database or memory (simplified)
     
     async def _show_emotion_categories(self, query):
         """Show emotion categories based on Plutchik's wheel and NVC"""
@@ -340,12 +312,13 @@ class EmoJournalBot:
         emotion = data.replace("emotion_", "")
         user_id = query.from_user.id
         
-        # Store selected emotion and ask for intensity
+        # Save emotion and show thank you
+        await self._save_emotion_entry(user_id, emotion)
+        
         await query.edit_message_text(
+            f"✨ Спасибо!\n\n"
             f"Выбрана эмоция: {emotion.title()}\n\n"
-            "Насколько интенсивно это ощущается по шкале от 0 до 10?\n"
-            "(0 — едва заметно, 10 — очень сильно)\n\n"
-            "Просто напиши цифру или пропусти, отправив любой текст."
+            f"Уже сам факт, что ты это заметил(а) и назвал(а), — шаг к ясности."
         )
     
     async def _request_custom_emotion(self, query):
@@ -358,7 +331,6 @@ class EmoJournalBot:
     async def _snooze_ping(self, query, user_id: int):
         """Snooze notification for 15 minutes"""
         await query.edit_message_text("Напомню через 15 минут ⏰")
-        # Schedule reminder in 15 minutes
         await self.scheduler.schedule_snooze(user_id, 15)
     
     async def _skip_today(self, query, user_id: int):
@@ -373,7 +345,7 @@ class EmoJournalBot:
         
         await query.edit_message_text(
             "Все ваши данные удалены.\n\n"
-            "Спасибо, что использовали EmoJournal! 💙\n"
+            "Спасибо, что использовали EmoJournal!\n"
             "Если захотите начать заново — отправьте /start"
         )
     
@@ -382,8 +354,7 @@ class EmoJournalBot:
         user_id = update.effective_user.id
         text = update.message.text.strip()
         
-        # Simple state management - in production use proper state storage
-        # For now, just save as emotion entry
+        # Save as emotion entry
         await self._save_emotion_entry(user_id, text)
         
         await update.message.reply_text(
@@ -394,9 +365,6 @@ class EmoJournalBot:
     async def _save_emotion_entry(self, user_id: int, emotion_text: str):
         """Save emotion entry to database"""
         try:
-            # Simple parsing - in production use NLP for better extraction
-            import json
-            
             entry_data = {
                 'emotions': [emotion_text.lower()],
                 'cause': '',
@@ -416,10 +384,6 @@ class EmoJournalBot:
             
         except Exception as e:
             logger.error(f"Failed to save emotion entry: {e}")
-    
-    async def health_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Health check endpoint for Render"""
-        return "OK"
     
     def create_application(self):
         """Create and configure telegram application"""
@@ -449,60 +413,77 @@ class EmoJournalBot:
         # Start scheduler
         await self.scheduler.start()
         
-        # Configure webhook
+        # Initialize application
         await application.initialize()
         await application.start()
         
         # Set webhook
-        webhook_path = "/webhook"
+        webhook_url = self.webhook_url
+        if not webhook_url.endswith('/webhook'):
+            webhook_url += '/webhook'
+        
         await application.bot.set_webhook(
-            url=f"{self.webhook_url}{webhook_path}",
+            url=webhook_url,
             allowed_updates=['message', 'callback_query']
         )
         
-        # Start webhook server
-        from telegram.ext import Application
-        webserver = application.updater.start_webhook(
-            listen="0.0.0.0",
-            port=self.port,
-            url_path="webhook",
-            webhook_url=f"{self.webhook_url}/webhook"
-        )
-        
-        # Add health check endpoint
+        # Create aiohttp web server
         from aiohttp import web
+        from aiohttp.web_request import Request
+        
+        async def webhook_handler(request: Request):
+            """Handle incoming webhook requests"""
+            try:
+                body = await request.text()
+                update_data = json.loads(body)
+                update = Update.de_json(update_data, application.bot)
+                
+                # Process update
+                await application.process_update(update)
+                
+                return web.Response(status=200)
+                
+            except Exception as e:
+                logger.error(f"Webhook error: {e}")
+                return web.Response(status=500)
+        
+        async def health_handler(request: Request):
+            """Health check endpoint"""
+            return web.Response(text="OK", status=200)
+        
+        # Create web application
         app = web.Application()
-        app.router.add_get('/health', lambda r: web.Response(text="OK"))
+        app.router.add_post('/webhook', webhook_handler)
+        app.router.add_get('/health', health_handler)
+        
+        # Start web server
+        from aiohttp import web
+        runner = web.AppRunner(app)
+        await runner.setup()
+        
+        site = web.TCPSite(runner, '0.0.0.0', self.port)
+        await site.start()
         
         logger.info(f"Bot started in webhook mode on port {self.port}")
+        logger.info(f"Webhook URL: {webhook_url}")
         
-        return application, webserver
+        return application, runner
+
 
 async def main():
     """Main function"""
     bot = EmoJournalBot()
     
     try:
-        application, webserver = await bot.run_webhook()
+        application, runner = await bot.run_webhook()
         
-        # Keep running
-        import signal
-        import asyncio
-        
-        def signal_handler(sig, frame):
-            logger.info("Shutting down...")
-            webserver.stop()
-            asyncio.create_task(application.stop())
-        
-        signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
-        
-        # Wait indefinitely
+        # Keep running indefinitely
         await asyncio.Event().wait()
         
     except Exception as e:
         logger.error(f"Failed to start bot: {e}")
         raise
+
 
 if __name__ == "__main__":
     asyncio.run(main())
