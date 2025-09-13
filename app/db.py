@@ -91,15 +91,15 @@ class Database:
         """Get database session"""
         return self.SessionLocal()
     
-    def create_user(self, user_id: int, chat_id: int, timezone: str = 'Europe/Moscow') -> User:
+    def create_user(self, user_id: int, chat_id: int, user_timezone: str = 'Europe/Moscow') -> User:
         """Create new user"""
         with self.get_session() as session:
             user = User(
                 id=user_id,
                 chat_id=chat_id,
-                timezone=timezone,
-                created_at=datetime.now(datetime.timezone.utc),
-                last_activity=datetime.now(datetime.timezone.utc)
+                timezone=user_timezone,
+                created_at=datetime.now(dt_timezone.utc),
+                last_activity=datetime.now(dt_timezone.utc)
             )
             
             session.add(user)
@@ -119,15 +119,15 @@ class Database:
         with self.get_session() as session:
             return session.query(User).filter(User.chat_id == chat_id).first()
     
-    def update_user_timezone(self, user_id: int, timezone: str):
+    def update_user_timezone(self, user_id: int, user_timezone: str):
         """Update user timezone"""
         with self.get_session() as session:
             user = session.query(User).filter(User.id == user_id).first()
             if user:
-                user.timezone = timezone
-                user.last_activity = datetime.now(datetime.timezone.utc)
+                user.timezone = user_timezone
+                user.last_activity = datetime.now(dt_timezone.utc)
                 session.commit()
-                logger.info(f"Updated timezone for user {user_id} to {timezone}")
+                logger.info(f"Updated timezone for user {user_id} to {user_timezone}")
     
     def update_user_paused(self, user_id: int, paused: bool):
         """Update user paused status"""
@@ -135,7 +135,7 @@ class Database:
             user = session.query(User).filter(User.id == user_id).first()
             if user:
                 user.paused = paused
-                user.last_activity = datetime.now(datetime.timezone.utc)
+                user.last_activity = datetime.now(dt_timezone.utc)
                 session.commit()
                 logger.info(f"Updated paused status for user {user_id} to {paused}")
     
@@ -183,13 +183,13 @@ class Database:
                 arousal=arousal,
                 body=body,
                 tags=tags,
-                created_at=datetime.now(datetime.timezone.utc)
+                created_at=datetime.now(dt_timezone.utc)
             )
             
             session.add(entry)
             
             # Update user last activity
-            user.last_activity = datetime.now(datetime.timezone.utc)
+            user.last_activity = datetime.now(dt_timezone.utc)
             
             session.commit()
             session.refresh(entry)
@@ -239,7 +239,7 @@ class Database:
                 user_id=user_id,
                 date_local=date_local,
                 times_local=times_json,
-                created_at=datetime.now(datetime.timezone.utc)
+                created_at=datetime.now(dt_timezone.utc)
             )
             
             session.add(schedule)
@@ -257,7 +257,7 @@ class Database:
             total_entries = session.query(Entry).count()
             
             # Active users (last 7 days)
-            week_ago = datetime.now(datetime.timezone.utc) - timedelta(days=7)
+            week_ago = datetime.now(dt_timezone.utc) - timedelta(days=7)
             active_weekly = (session.query(User)
                             .filter(User.last_activity >= week_ago)
                             .count())
