@@ -10,7 +10,6 @@ import asyncio
 from datetime import datetime, timedelta, time
 from typing import List, Optional
 import json
-from .db import Database
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
@@ -234,3 +233,181 @@ class RandomScheduler:
                 try:
                     self.scheduler.remove_job(job_id)
                 except:
+                    pass
+                
+                # Schedule ping
+                self.scheduler.add_job(
+                    self._send_emotion_ping,
+                    'date',
+                    run_date=ping_datetime,
+                    args=[user_id],
+                    id=job_id,
+                    replace_existing=True
+                )
+                
+                logger.debug(f"Scheduled ping for user {user_id} at {ping_datetime}")
+    
+    async def _generate_user_daily_schedule(self, user_id: int):
+        """Generate and schedule pings for a specific user (called daily at 08:55)"""
+        user = self.db.get_user(user_id)
+        if not user or user.paused:
+            return
+            
+        import zoneinfo
+        tz = zoneinfo.ZoneInfo(user.timezone)
+        tomorrow = (datetime.now(tz) + timedelta(days=1)).date()
+        
+        # Generate random times for tomorrow
+        times = self.generate_random_times()
+        times_json = json.dumps([t.strftime('%H:%M') for t in times])
+        
+        # Save schedule to database
+        self.db.save_user_schedule(user_id, tomorrow, times_json)
+        
+        # Schedule ping jobs for tomorrow
+        tomorrow_str = tomorrow.strftime('%Y%m%d')
+        
+        for i, ping_time in enumerate(times):
+            ping_datetime = datetime.combine(tomorrow, ping_time, tzinfo=tz)
+            job_id = f'ping_{user_id}_{tomorrow_str}_{i}'
+            
+            self.scheduler.add_job(
+                self._send_emotion_ping,
+                'date',
+                run_date=ping_datetime,
+                args=[user_id],
+                id=job_id,
+                replace_existing=True
+            )
+        
+        logger.info(f"Generated schedule for user {user_id} on {tomorrow}: {[t.strftime('%H:%M') for t in times]}")
+    
+    async def _daily_schedule_all_users(self):
+        """Generate schedules for all active users (runs daily at 08:55)"""
+        active_users = self.db.get_active_users()
+        
+        for user in active_users:
+            if not user.paused:
+                try:
+                    await self._generate_user_daily_schedule(user.id)
+                except Exception as e:
+                    logger.error(f"Failed to generate schedule for user {user.id}: {e}")
+        
+        logger.info(f"Generated daily schedules for {len(active_users)} users")
+    
+    async def _send_emotion_ping(self, user_id: int):
+        """Send emotion ping to user (called by scheduled jobs)"""
+        try:
+            # Import here to avoid circular dependency - use relative import
+            import os
+            bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
+            
+            from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+            bot = Bot(token=bot_token)
+            
+            user = self.db.get_user(user_id)
+            if not user or user.paused:
+                return
+            
+            keyboard = [
+                [InlineKeyboardButton("Ответить", callback_data=f"respond_{user_id}")],
+                [InlineKeyboardButton("Отложить на 15 мин", callback_data=f"snooze_{user_id}")],
+                [InlineKeyboardButton("Пропустить сегодня", callback_data=f"skip_{user_id}")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            # Use relative import
+            from .i18n import Texts
+            texts = Texts()
+            
+            await bot.send_message(
+                chat_id=user.chat_id,
+                text=texts.EMOTION_PING,
+                reply_markup=reply_markup
+            )
+            
+            logger.info(f"Sent emotion ping to user {user_id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to send ping to user {user_id}: {e}")
+    
+    async def schedule_snooze(self, user_id: int, minutes: int = 15):
+        """Schedule a snoozed ping"""
+        if not self.scheduler:
+            return
+            
+        snooze_time = datetime.now() + timedelta(minutes=minutes)
+        job_id = f'snooze_{user_id}_{int(snooze_time.timestamp())}'
+        
+        self.scheduler.add_job(
+            self._send_emotion_ping,
+            'date',
+            run_date=snooze_time,
+            args=[user_id],
+            id=job_id,
+            replace_existing=True
+        )
+        
+        logger.info(f"Scheduled snooze ping for user {user_id} in {minutes} minutes")
+    
+    async def skip_today(self, user_id: int):
+        """Skip remaining pings for today"""
+        if not self.scheduler:
+            return
+            
+        import zoneinfo
+        user = self.db.get_user(user_id)
+        if not user:
+            return
+            
+        tz = zoneinfo.ZoneInfo(user.timezone)
+        today_str = datetime.now(tz).strftime('%Y%m%d')
+        
+        # Remove all remaining ping jobs for today
+        for i in range(self.DAILY_PINGS):
+            job_id = f'ping_{user_id}_{today_str}_{i}'
+            try:
+                self.scheduler.remove_job(job_id)
+            except:
+                pass
+        
+        logger.info(f"Skipped remaining pings for user {user_id} today")
+    
+    async def stop(self):
+        """Stop the scheduler"""
+        if self.scheduler:
+            self.scheduler.shutdown(wait=False)
+            logger.info("Scheduler stopped")
+
+
+def test_random_time_generation():
+    """Unit test for random time generation algorithm"""
+    scheduler = RandomScheduler(None)
+    
+    success_count = 0
+    total_tests = 1000
+    
+    for i in range(total_tests):
+        times = scheduler.generate_random_times()
+        
+        # Test conditions
+        if (len(times) == 4 and 
+            scheduler.validate_time_spacing(times) and
+            all(9 <= t.hour < 23 for t in times)):
+            success_count += 1
+        else:
+            print(f"Test {i+1} failed: {[t.strftime('%H:%M') for t in times]}")
+    
+    success_rate = success_count / total_tests * 100
+    print(f"Random time generation test: {success_count}/{total_tests} ({success_rate:.1f}%) passed")
+    
+    if success_rate < 95:
+        raise Exception(f"Random time generation test failed: only {success_rate:.1f}% success rate")
+    
+    return True
+
+
+if __name__ == "__main__":
+    # Run unit test
+    test_random_time_generation()
+    print("All tests passed!")
