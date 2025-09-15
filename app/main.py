@@ -488,6 +488,52 @@ class EmoJournalBot:
             # Time selection callbacks
             elif data.startswith("time_hour_"):
                 await self._set_summary_time(query, data, user_id)
+
+        elif data == "back_to_settings":
+    await self._refresh_settings_display(query, user_id)
+elif data == "show_summary_periods":
+    # Show period selection again
+    keyboard = [
+        [
+            InlineKeyboardButton("7 дней", callback_data="summary_period_7"),
+            InlineKeyboardButton("2 недели", callback_data="summary_period_14")
+        ],
+        [
+            InlineKeyboardButton("30 дней", callback_data="summary_period_30"),
+            InlineKeyboardButton("3 месяца", callback_data="summary_period_90")
+        ],
+        [
+            InlineKeyboardButton("Другой период", callback_data="summary_period_custom")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        "📊 За какой период показать сводку?",
+        reply_markup=reply_markup
+    )
+elif data == "export_csv_inline":
+    # Handle inline CSV export
+    try:
+        csv_data = await self.analyzer.export_csv(user_id)
+        if csv_data:
+            # Send as document
+            import io
+            
+            csv_file = io.BytesIO(csv_data.encode('utf-8'))
+            csv_file.name = f"emojournal_export_{datetime.now().strftime('%Y%m%d')}.csv"
+            
+            bot = query.bot
+            await bot.send_document(
+                chat_id=query.message.chat_id,
+                document=csv_file,
+                caption="Ваши данные в формате CSV"
+            )
+            await query.answer("CSV файл отправлен!")
+        else:
+            await query.answer("Пока нет данных для экспорта", show_alert=True)
+    except Exception as e:
+        logger.error(f"Error exporting CSV inline for user {user_id}: {e}")
+        await query.answer("Ошибка при экспорте данных", show_alert=True)
                 
         except Exception as e:
             logger.error(f"Error handling callback {data} for user {user_id}: {e}")
