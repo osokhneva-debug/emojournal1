@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 EmoJournal Telegram Bot - Main Application
-Emotion tracking bot with random scheduling and weekly analytics
+Emotion tracking bot with fixed scheduling and performance
 """
 
 import logging
@@ -16,7 +16,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from telegram.error import TelegramError
 
 from .db import Database, User, Entry
-from .scheduler import RandomScheduler
+from .scheduler import FixedScheduler
 from .i18n import Texts
 from .analysis import WeeklyAnalyzer
 
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 class EmoJournalBot:
     def __init__(self):
         self.db = Database()
-        self.scheduler = RandomScheduler(self.db)
+        self.scheduler = FixedScheduler(self.db)
         self.texts = Texts()
         self.analyzer = WeeklyAnalyzer(self.db)
         
@@ -38,9 +38,6 @@ class EmoJournalBot:
         self.bot_token = self._get_env_var('TELEGRAM_BOT_TOKEN')
         self.webhook_url = self._get_env_var('WEBHOOK_URL')
         self.port = int(os.getenv('PORT', '10000'))
-        
-        # Rate limiting storage (simple in-memory)
-        self.rate_limits: Dict[int, datetime] = {}
         
         # User states for multi-step conversations (simplified in-memory storage)
         self.user_states: Dict[int, Dict[str, Any]] = {}
@@ -51,15 +48,6 @@ class EmoJournalBot:
             logger.error(f"Required environment variable {name} not set")
             raise ValueError(f"Environment variable {name} is required")
         return value
-    
-    def _check_rate_limit(self, user_id: int) -> bool:
-        """Simple rate limiting: 1 command per 2 seconds"""
-        now = datetime.now(timezone.utc)
-        if user_id in self.rate_limits:
-            if (now - self.rate_limits[user_id]).total_seconds() < 2:
-                return False
-        self.rate_limits[user_id] = now
-        return True
     
     def _set_user_state(self, user_id: int, state: str, data: Dict[str, Any] = None):
         """Set user conversation state"""
@@ -80,9 +68,6 @@ class EmoJournalBot:
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command with onboarding"""
-        if not self._check_rate_limit(update.effective_user.id):
-            return
-            
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
         
@@ -96,21 +81,23 @@ class EmoJournalBot:
             # Start daily scheduling for new user
             await self.scheduler.start_user_schedule(user_id)
         
-        # Set bot commands menu
-        commands = [
-            BotCommand("start", "🎭 Запустить бота"),
-            BotCommand("note", "📝 Записать эмоцию сейчас"),
-            BotCommand("help", "❓ Помощь и информация"),
-            BotCommand("summary", "📊 Сводка за неделю"),
-            BotCommand("export", "📥 Экспорт данных в CSV"),
-            BotCommand("timezone", "🌍 Настройка часового пояса"),
-            BotCommand("pause", "⏸️ Приостановить уведомления"),
-            BotCommand("resume", "▶️ Возобновить уведомления"),
-            BotCommand("stats", "📈 Статистика бота"),
-            BotCommand("delete_me", "🗑️ Удалить все данные")
-        ]
-        
-        await context.bot.set_my_commands(commands)
+        # Set bot commands menu (only once)
+        if not user or not hasattr(self, '_commands_set'):
+            commands = [
+                BotCommand("start", "🎭 Запустить бота"),
+                BotCommand("note", "📝 Записать эмоцию сейчас"),
+                BotCommand("help", "❓ Помощь и информация"),
+                BotCommand("summary", "📊 Сводка за неделю"),
+                BotCommand("export", "📥 Экспорт данных в CSV"),
+                BotCommand("timezone", "🌍 Настройка часового пояса"),
+                BotCommand("pause", "⏸️ Приостановить уведомления"),
+                BotCommand("resume", "▶️ Возобновить уведомления"),
+                BotCommand("stats", "📈 Статистика бота"),
+                BotCommand("delete_me", "🗑️ Удалить все данные")
+            ]
+            
+            await context.bot.set_my_commands(commands)
+            self._commands_set = True
         
         await update.message.reply_text(
             self.texts.ONBOARDING,
@@ -119,9 +106,6 @@ class EmoJournalBot:
     
     async def note_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /note command for manual emotion entry"""
-        if not self._check_rate_limit(update.effective_user.id):
-            return
-        
         user_id = update.effective_user.id
         self._clear_user_state(user_id)
         
@@ -138,9 +122,6 @@ class EmoJournalBot:
     
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command"""
-        if not self._check_rate_limit(update.effective_user.id):
-            return
-            
         await update.message.reply_text(
             self.texts.HELP,
             parse_mode='HTML'
@@ -148,9 +129,6 @@ class EmoJournalBot:
     
     async def timezone_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /timezone command"""
-        if not self._check_rate_limit(update.effective_user.id):
-            return
-            
         user_id = update.effective_user.id
         
         if context.args:
@@ -177,10 +155,7 @@ class EmoJournalBot:
             )
     
     async def summary_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /summary command"""
-        if not self._check_rate_limit(update.effective_user.id):
-            return
-            
+        """Handle /summary command - works with any number of entries"""
         user_id = update.effective_user.id
         days = 7
         
@@ -196,9 +171,6 @@ class EmoJournalBot:
     
     async def export_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /export command"""
-        if not self._check_rate_limit(update.effective_user.id):
-            return
-            
         user_id = update.effective_user.id
         csv_data = await self.analyzer.export_csv(user_id)
         
@@ -216,9 +188,6 @@ class EmoJournalBot:
     
     async def delete_me_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /delete_me command"""
-        if not self._check_rate_limit(update.effective_user.id):
-            return
-            
         user_id = update.effective_user.id
         
         keyboard = [
@@ -238,9 +207,6 @@ class EmoJournalBot:
     
     async def pause_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /pause command"""
-        if not self._check_rate_limit(update.effective_user.id):
-            return
-            
         user_id = update.effective_user.id
         self.db.update_user_paused(user_id, True)
         await self.scheduler.stop_user_schedule(user_id)
@@ -249,9 +215,6 @@ class EmoJournalBot:
     
     async def resume_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /resume command"""
-        if not self._check_rate_limit(update.effective_user.id):
-            return
-            
         user_id = update.effective_user.id
         self.db.update_user_paused(user_id, False)
         await self.scheduler.start_user_schedule(user_id)
@@ -260,9 +223,6 @@ class EmoJournalBot:
     
     async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /stats command"""
-        if not self._check_rate_limit(update.effective_user.id):
-            return
-            
         stats = self.db.get_global_stats()
         await update.message.reply_text(
             f"📊 Статистика EmoJournal:\n\n"
@@ -316,7 +276,7 @@ class EmoJournalBot:
         )
     
     async def _show_emotion_categories(self, query):
-        """Show emotion categories based on Plutchik's wheel and NVC"""
+        """Show emotion categories"""
         keyboard = []
         categories = [
             ("Радость/Удовлетворение", "category_joy"),
@@ -370,7 +330,7 @@ class EmoJournalBot:
         )
     
     async def _handle_emotion_selection(self, query, data: str):
-        """Handle specific emotion selection - now asks for cause"""
+        """Handle specific emotion selection - asks for cause"""
         emotion = data.replace("emotion_", "")
         user_id = query.from_user.id
         
@@ -620,7 +580,7 @@ async def main():
         # Keep running indefinitely
         await asyncio.Event().wait()
         
-    except Exception as e:  # ИСПРАВЛЕНО: добавлено 'as'
+    except Exception as e:
         logger.error(f"Failed to start bot: {e}")
         raise
 
