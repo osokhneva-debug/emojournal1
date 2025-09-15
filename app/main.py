@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 EmoJournal Telegram Bot - Main Application
-Emotion tracking bot with fixed scheduling and security
+Emotion tracking bot with interactive summaries and automatic weekly reports
 """
 
 import logging
@@ -105,7 +105,7 @@ class EmoJournalBot:
         self.bot_token = self._get_env_var('TELEGRAM_BOT_TOKEN')
         self.webhook_url = self._get_env_var('WEBHOOK_URL')
         self.port = int(os.getenv('PORT', '10000'))
-        
+    
     def _get_env_var(self, name: str) -> str:
         value = os.getenv(name)
         if not value:
@@ -142,7 +142,7 @@ class EmoJournalBot:
         return True
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /start command with onboarding"""
+        """Handle /start command with updated onboarding"""
         if not await self._check_rate_limits(update, 'start'):
             return
             
@@ -167,7 +167,8 @@ class EmoJournalBot:
                     BotCommand("start", "🎭 Запустить бота"),
                     BotCommand("note", "📝 Записать эмоцию сейчас"),
                     BotCommand("help", "❓ Помощь и информация"),
-                    BotCommand("summary", "📊 Сводка за неделю"),
+                    BotCommand("summary", "📊 Сводка за период"),
+                    BotCommand("settings", "⚙️ Настройки бота"),
                     BotCommand("export", "📥 Экспорт данных в CSV"),
                     BotCommand("timezone", "🌍 Настройка часового пояса"),
                     BotCommand("pause", "⏸️ Приостановить уведомления"),
@@ -261,31 +262,79 @@ class EmoJournalBot:
             )
     
     async def summary_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /summary command - works with any number of entries"""
+        """Handle /summary command - now shows interactive period selection"""
         if not await self._check_rate_limits(update, 'summary'):
             return
             
         user_id = update.effective_user.id
-        days = 7
+        self._clear_user_state(user_id)
         
-        if context.args:
-            try:
-                days_input = int(context.args[0])
-                days = max(1, min(days_input, 90))  # Limit to 1-90 days
-            except ValueError:
-                await update.message.reply_text(
-                    "Неверный формат. Используйте: /summary 7 (для 7 дней)"
-                )
-                return
+        # Show period selection buttons
+        keyboard = [
+            [
+                InlineKeyboardButton("7 дней", callback_data="summary_period_7"),
+                InlineKeyboardButton("2 недели", callback_data="summary_period_14")
+            ],
+            [
+                InlineKeyboardButton("30 дней", callback_data="summary_period_30"),
+                InlineKeyboardButton("3 месяца", callback_data="summary_period_90")
+            ],
+            [
+                InlineKeyboardButton("Другой период", callback_data="summary_period_custom")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            "📊 За какой период показать сводку?",
+            reply_markup=reply_markup
+        )
+    
+    async def settings_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /settings command - user preferences"""
+        if not await self._check_rate_limits(update, 'settings'):
+            return
+            
+        user_id = update.effective_user.id
         
         try:
-            summary = await self.analyzer.generate_summary(user_id, days)
-            await update.message.reply_text(summary, parse_mode='HTML')
-        except Exception as e:
-            logger.error(f"Error generating summary for user {user_id}: {e}")
+            # Get current settings
+            settings = self.db.get_user_settings(user_id)
+            if not settings:
+                # Create default settings if not exist
+                self.db.update_user_settings(user_id, 
+                    weekly_summary_enabled=True, 
+                    summary_time_hour=21
+                )
+                settings = self.db.get_user_settings(user_id)
+            
+            weekly_enabled = settings.get('weekly_summary_enabled', True)
+            summary_hour = settings.get('summary_time_hour', 21)
+            
+            # Create settings keyboard
+            weekly_text = "✅ Включены" if weekly_enabled else "❌ Отключены"
+            keyboard = [
+                [InlineKeyboardButton(f"Еженедельные саммари: {weekly_text}", 
+                                    callback_data="toggle_weekly_summary")],
+                [InlineKeyboardButton(f"Время отправки: {summary_hour:02d}:00", 
+                                    callback_data="change_summary_time")],
+                [InlineKeyboardButton("💾 Сохранить и закрыть", 
+                                    callback_data="settings_close")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
             await update.message.reply_text(
-                "Не удалось сформировать сводку. Попробуйте позже."
+                "⚙️ <b>Настройки EmoJournal</b>\n\n"
+                f"📅 <b>Автоматические саммари:</b> {weekly_text}\n"
+                f"🕘 <b>Время отправки:</b> каждое воскресенье в {summary_hour:02d}:00\n\n"
+                "Выберите что хотите изменить:",
+                reply_markup=reply_markup,
+                parse_mode='HTML'
             )
+            
+        except Exception as e:
+            logger.error(f"Error in settings command for user {user_id}: {e}")
+            await update.message.reply_text("Произошла ошибка при загрузке настроек.")
     
     async def export_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /export command"""
@@ -380,14 +429,15 @@ class EmoJournalBot:
                 f"📊 Статистика EmoJournal:\n\n"
                 f"👥 Всего пользователей: {stats['total_users']}\n"
                 f"📝 Всего записей: {stats['total_entries']}\n"
-                f"📅 Активных за неделю: {stats['active_weekly']}"
+                f"📅 Активных за неделю: {stats['active_weekly']}\n"
+                f"📊 Подписано на саммари: {stats['weekly_summary_users']}"
             )
         except Exception as e:
             logger.error(f"Error getting stats: {e}")
             await update.message.reply_text("Не удалось получить статистику.")
     
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle inline keyboard callbacks"""
+        """Handle inline keyboard callbacks including new summary and settings callbacks"""
         query = update.callback_query
         
         # Check rate limits for callbacks
@@ -420,9 +470,180 @@ class EmoJournalBot:
                 await self._request_custom_emotion(query)
             elif data == "skip_cause":
                 await self._skip_cause_and_finish(query, user_id)
+            
+            # NEW: Summary period selection callbacks
+            elif data.startswith("summary_period_"):
+                await self._handle_summary_period_selection(query, data, user_id)
+            elif data == "summary_period_custom":
+                await self._request_custom_period(query, user_id)
+            
+            # NEW: Settings callbacks
+            elif data == "toggle_weekly_summary":
+                await self._toggle_weekly_summary(query, user_id)
+            elif data == "change_summary_time":
+                await self._change_summary_time(query, user_id)
+            elif data == "settings_close":
+                await query.edit_message_text("✅ Настройки сохранены!")
+            
+            # Time selection callbacks
+            elif data.startswith("time_hour_"):
+                await self._set_summary_time(query, data, user_id)
+                
         except Exception as e:
             logger.error(f"Error handling callback {data} for user {user_id}: {e}")
             await query.edit_message_text("Произошла ошибка. Попробуйте позже.")
+    
+    async def _handle_summary_period_selection(self, query, data: str, user_id: int):
+        """Handle summary period selection (7, 14, 30, 90 days)"""
+        try:
+            # Extract days from callback data
+            period_str = data.replace("summary_period_", "")
+            days = int(period_str)
+            
+            # Show "generating" message
+            await query.edit_message_text(f"📊 Генерирую сводку за {days} дней...")
+            
+            # Generate summary
+            summary = await self.analyzer.generate_summary(user_id, days)
+            
+            # Add period info to summary
+            period_text = self._get_period_text(days)
+            enhanced_summary = f"📊 <b>Сводка за {period_text}</b>\n\n{summary}"
+            
+            # Add action buttons after summary
+            keyboard = [
+                [InlineKeyboardButton("Другой период", callback_data="show_summary_periods")],
+                [InlineKeyboardButton("📥 Экспорт CSV", callback_data="export_csv_inline")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                enhanced_summary,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+            
+        except Exception as e:
+            logger.error(f"Error generating summary for {days} days: {e}")
+            await query.edit_message_text("Не удалось сформировать сводку. Попробуйте позже.")
+    
+    async def _request_custom_period(self, query, user_id: int):
+        """Request custom period input"""
+        self._set_user_state(user_id, 'waiting_for_custom_period')
+        
+        await query.edit_message_text(
+            "📊 Введите количество дней для анализа (от 1 до 90):\n\n"
+            "Например: 14 (для двух недель)"
+        )
+    
+    async def _toggle_weekly_summary(self, query, user_id: int):
+        """Toggle weekly summary setting"""
+        try:
+            # Get current settings
+            settings = self.db.get_user_settings(user_id)
+            current_enabled = settings.get('weekly_summary_enabled', True) if settings else True
+            
+            # Toggle setting
+            new_enabled = not current_enabled
+            self.db.update_user_settings(user_id, weekly_summary_enabled=new_enabled)
+            
+            # Update display
+            await self._refresh_settings_display(query, user_id)
+            
+        except Exception as e:
+            logger.error(f"Error toggling weekly summary for user {user_id}: {e}")
+            await query.answer("Произошла ошибка при изменении настройки", show_alert=True)
+    
+    async def _change_summary_time(self, query, user_id: int):
+        """Show time selection for summary delivery"""
+        keyboard = []
+        
+        # Create time options (evening hours)
+        time_options = [18, 19, 20, 21, 22, 23]
+        for i in range(0, len(time_options), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(time_options):
+                    hour = time_options[i + j]
+                    row.append(InlineKeyboardButton(
+                        f"{hour:02d}:00", 
+                        callback_data=f"time_hour_{hour}"
+                    ))
+            keyboard.append(row)
+        
+        keyboard.append([InlineKeyboardButton("← Назад к настройкам", callback_data="back_to_settings")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "🕘 Выберите время для получения еженедельных саммари:",
+            reply_markup=reply_markup
+        )
+    
+    async def _set_summary_time(self, query, data: str, user_id: int):
+        """Set summary delivery time"""
+        try:
+            # Extract hour from callback data
+            hour_str = data.replace("time_hour_", "")
+            hour = int(hour_str)
+            
+            # Validate hour
+            if not (0 <= hour <= 23):
+                await query.answer("Неверное время", show_alert=True)
+                return
+            
+            # Update setting
+            self.db.update_user_settings(user_id, summary_time_hour=hour)
+            
+            # Back to settings
+            await self._refresh_settings_display(query, user_id)
+            
+        except Exception as e:
+            logger.error(f"Error setting summary time for user {user_id}: {e}")
+            await query.answer("Произошла ошибка при изменении времени", show_alert=True)
+    
+    async def _refresh_settings_display(self, query, user_id: int):
+        """Refresh settings display with current values"""
+        try:
+            settings = self.db.get_user_settings(user_id)
+            weekly_enabled = settings.get('weekly_summary_enabled', True) if settings else True
+            summary_hour = settings.get('summary_time_hour', 21) if settings else 21
+            
+            weekly_text = "✅ Включены" if weekly_enabled else "❌ Отключены"
+            keyboard = [
+                [InlineKeyboardButton(f"Еженедельные саммари: {weekly_text}", 
+                                    callback_data="toggle_weekly_summary")],
+                [InlineKeyboardButton(f"Время отправки: {summary_hour:02d}:00", 
+                                    callback_data="change_summary_time")],
+                [InlineKeyboardButton("💾 Сохранить и закрыть", 
+                                    callback_data="settings_close")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                "⚙️ <b>Настройки EmoJournal</b>\n\n"
+                f"📅 <b>Автоматические саммари:</b> {weekly_text}\n"
+                f"🕘 <b>Время отправки:</b> каждое воскресенье в {summary_hour:02d}:00\n\n"
+                "Выберите что хотите изменить:",
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+            
+        except Exception as e:
+            logger.error(f"Error refreshing settings for user {user_id}: {e}")
+            await query.edit_message_text("Произошла ошибка при обновлении настроек.")
+    
+    def _get_period_text(self, days: int) -> str:
+        """Get human-readable period text"""
+        if days == 7:
+            return "неделю"
+        elif days == 14:
+            return "2 недели"
+        elif days == 30:
+            return "месяц"
+        elif days == 90:
+            return "3 месяца"
+        else:
+            return f"{days} дней"
     
     async def _start_emotion_flow(self, query, user_id: int):
         """Start emotion recording flow"""
@@ -576,7 +797,7 @@ class EmoJournalBot:
             await query.edit_message_text("Произошла ошибка при удалении данных.")
     
     async def handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle text messages (emotion/cause/note input) with security validation"""
+        """Handle text messages (emotion/cause/note input and custom period) with security validation"""
         if not await self._check_rate_limits(update):
             return
             
@@ -632,6 +853,46 @@ class EmoJournalBot:
             except Exception as e:
                 logger.error(f"Failed to save entry for user {user_id}: {e}")
                 await update.message.reply_text("Произошла ошибка при сохранении. Попробуйте позже.")
+        
+        elif user_state.get('state') == 'waiting_for_custom_period':
+            # NEW: User entered custom period for summary
+            try:
+                days = int(raw_text.strip())
+                if not (1 <= days <= 90):
+                    await update.message.reply_text(
+                        "Количество дней должно быть от 1 до 90. Попробуйте еще раз."
+                    )
+                    return
+                
+                self._clear_user_state(user_id)
+                
+                # Generate summary for custom period
+                period_text = self._get_period_text(days)
+                await update.message.reply_text(f"📊 Генерирую сводку за {period_text}...")
+                
+                summary = await self.analyzer.generate_summary(user_id, days)
+                enhanced_summary = f"📊 <b>Сводка за {period_text}</b>\n\n{summary}"
+                
+                # Add action buttons
+                keyboard = [
+                    [InlineKeyboardButton("Другой период", callback_data="show_summary_periods")],
+                    [InlineKeyboardButton("📥 Экспорт CSV", callback_data="export_csv_inline")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await update.message.reply_text(
+                    enhanced_summary,
+                    reply_markup=reply_markup,
+                    parse_mode='HTML'
+                )
+                
+            except ValueError:
+                await update.message.reply_text(
+                    "Пожалуйста, введите число от 1 до 90."
+                )
+            except Exception as e:
+                logger.error(f"Error generating custom period summary: {e}")
+                await update.message.reply_text("Не удалось сформировать сводку. Попробуйте позже.")
                 
         else:
             # Regular text message - treat as emotion
@@ -705,6 +966,7 @@ class EmoJournalBot:
         application.add_handler(CommandHandler("help", self.help_command))
         application.add_handler(CommandHandler("timezone", self.timezone_command))
         application.add_handler(CommandHandler("summary", self.summary_command))
+        application.add_handler(CommandHandler("settings", self.settings_command))  # NEW
         application.add_handler(CommandHandler("export", self.export_command))
         application.add_handler(CommandHandler("delete_me", self.delete_me_command))
         application.add_handler(CommandHandler("pause", self.pause_command))
