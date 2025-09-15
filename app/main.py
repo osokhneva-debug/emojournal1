@@ -436,104 +436,103 @@ class EmoJournalBot:
             logger.error(f"Error getting stats: {e}")
             await update.message.reply_text("Не удалось получить статистику.")
     
-    async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle inline keyboard callbacks including new summary and settings callbacks"""
-        query = update.callback_query
+   async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inline keyboard callbacks including new summary and settings callbacks"""
+    query = update.callback_query
+    
+    # Check rate limits for callbacks
+    if not await self._check_rate_limits(update):
+        return
         
-        # Check rate limits for callbacks
-        if not await self._check_rate_limits(update):
-            return
-            
-        await query.answer()
-        
-        data = query.data
-        user_id = query.from_user.id
-        
-        try:
-            if data.startswith("respond_"):
-                await self._start_emotion_flow(query, user_id)
-            elif data.startswith("snooze_"):
-                await self._snooze_ping(query, user_id)
-            elif data.startswith("skip_"):
-                await self._skip_today(query, user_id)
-            elif data.startswith("emotion_"):
-                await self._handle_emotion_selection(query, data)
-            elif data.startswith("delete_confirm_"):
-                await self._confirm_delete(query, user_id)
-            elif data == "delete_cancel":
-                await query.edit_message_text("Удаление отменено")
-            elif data == "show_emotions":
-                await self._show_emotion_categories(query)
-            elif data.startswith("category_"):
-                await self._show_category_emotions(query, data)
-            elif data == "other_emotion":
-                await self._request_custom_emotion(query)
-            elif data == "skip_cause":
-                await self._skip_cause_and_finish(query, user_id)
-            
-            # NEW: Summary period selection callbacks
-            elif data.startswith("summary_period_"):
-                await self._handle_summary_period_selection(query, data, user_id)
-            elif data == "summary_period_custom":
-                await self._request_custom_period(query, user_id)
-            
-            # NEW: Settings callbacks
-            elif data == "toggle_weekly_summary":
-                await self._toggle_weekly_summary(query, user_id)
-            elif data == "change_summary_time":
-                await self._change_summary_time(query, user_id)
-            elif data == "settings_close":
-                await query.edit_message_text("✅ Настройки сохранены!")
-            
-            # Time selection callbacks
-            elif data.startswith("time_hour_"):
-                await self._set_summary_time(query, data, user_id)
-
-        elif data == "back_to_settings":
-    await self._refresh_settings_display(query, user_id)
-elif data == "show_summary_periods":
-    # Show period selection again
-    keyboard = [
-        [
-            InlineKeyboardButton("7 дней", callback_data="summary_period_7"),
-            InlineKeyboardButton("2 недели", callback_data="summary_period_14")
-        ],
-        [
-            InlineKeyboardButton("30 дней", callback_data="summary_period_30"),
-            InlineKeyboardButton("3 месяца", callback_data="summary_period_90")
-        ],
-        [
-            InlineKeyboardButton("Другой период", callback_data="summary_period_custom")
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
-        "📊 За какой период показать сводку?",
-        reply_markup=reply_markup
-    )
-elif data == "export_csv_inline":
-    # Handle inline CSV export
+    await query.answer()
+    
+    data = query.data
+    user_id = query.from_user.id
+    
     try:
-        csv_data = await self.analyzer.export_csv(user_id)
-        if csv_data:
-            # Send as document
-            import io
-            
-            csv_file = io.BytesIO(csv_data.encode('utf-8'))
-            csv_file.name = f"emojournal_export_{datetime.now().strftime('%Y%m%d')}.csv"
-            
-            bot = query.bot
-            await bot.send_document(
-                chat_id=query.message.chat_id,
-                document=csv_file,
-                caption="Ваши данные в формате CSV"
+        if data.startswith("respond_"):
+            await self._start_emotion_flow(query, user_id)
+        elif data.startswith("snooze_"):
+            await self._snooze_ping(query, user_id)
+        elif data.startswith("skip_"):
+            await self._skip_today(query, user_id)
+        elif data.startswith("emotion_"):
+            await self._handle_emotion_selection(query, data)
+        elif data.startswith("delete_confirm_"):
+            await self._confirm_delete(query, user_id)
+        elif data == "delete_cancel":
+            await query.edit_message_text("Удаление отменено")
+        elif data == "show_emotions":
+            await self._show_emotion_categories(query)
+        elif data.startswith("category_"):
+            await self._show_category_emotions(query, data)
+        elif data == "other_emotion":
+            await self._request_custom_emotion(query)
+        elif data == "skip_cause":
+            await self._skip_cause_and_finish(query, user_id)
+        
+        # NEW: Summary period selection callbacks
+        elif data.startswith("summary_period_"):
+            await self._handle_summary_period_selection(query, data, user_id)
+        elif data == "summary_period_custom":
+            await self._request_custom_period(query, user_id)
+        
+        # NEW: Settings callbacks
+        elif data == "toggle_weekly_summary":
+            await self._toggle_weekly_summary(query, user_id)
+        elif data == "change_summary_time":
+            await self._change_summary_time(query, user_id)
+        elif data == "settings_close":
+            await query.edit_message_text("✅ Настройки сохранены!")
+        
+        # Time selection callbacks
+        elif data.startswith("time_hour_"):
+            await self._set_summary_time(query, data, user_id)
+        elif data == "back_to_settings":
+            await self._refresh_settings_display(query, user_id)
+        elif data == "show_summary_periods":
+            # Show period selection again
+            keyboard = [
+                [
+                    InlineKeyboardButton("7 дней", callback_data="summary_period_7"),
+                    InlineKeyboardButton("2 недели", callback_data="summary_period_14")
+                ],
+                [
+                    InlineKeyboardButton("30 дней", callback_data="summary_period_30"),
+                    InlineKeyboardButton("3 месяца", callback_data="summary_period_90")
+                ],
+                [
+                    InlineKeyboardButton("Другой период", callback_data="summary_period_custom")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                "📊 За какой период показать сводку?",
+                reply_markup=reply_markup
             )
-            await query.answer("CSV файл отправлен!")
-        else:
-            await query.answer("Пока нет данных для экспорта", show_alert=True)
-    except Exception as e:
-        logger.error(f"Error exporting CSV inline for user {user_id}: {e}")
-        await query.answer("Ошибка при экспорте данных", show_alert=True)
+        elif data == "export_csv_inline":
+            # Handle inline CSV export
+            try:
+                csv_data = await self.analyzer.export_csv(user_id)
+                if csv_data:
+                    # Send as document
+                    import io
+                    
+                    csv_file = io.BytesIO(csv_data.encode('utf-8'))
+                    csv_file.name = f"emojournal_export_{datetime.now().strftime('%Y%m%d')}.csv"
+                    
+                    bot = query.bot
+                    await bot.send_document(
+                        chat_id=query.message.chat_id,
+                        document=csv_file,
+                        caption="Ваши данные в формате CSV"
+                    )
+                    await query.answer("CSV файл отправлен!")
+                else:
+                    await query.answer("Пока нет данных для экспорта", show_alert=True)
+            except Exception as e:
+                logger.error(f"Error exporting CSV inline for user {user_id}: {e}")
+                await query.answer("Ошибка при экспорте данных", show_alert=True)
                 
         except Exception as e:
             logger.error(f"Error handling callback {data} for user {user_id}: {e}")
