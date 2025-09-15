@@ -2,7 +2,7 @@
 """
 Weekly Analysis and Export for EmoJournal Bot
 Generates insights and CSV exports based on user data
-Enhanced with emotion categorization
+Enhanced with correct emotion categorization
 """
 
 import logging
@@ -18,21 +18,51 @@ from .i18n import Texts, format_emotion_list, get_time_period_text, generate_ins
 logger = logging.getLogger(__name__)
 
 class WeeklyAnalyzer:
-    """Analyzes user emotion data and generates insights with categorization"""
+    """Analyzes user emotion data and generates insights with correct categorization"""
     
-    # Новые категории эмоций
+    # Четкие списки эмоций для каждой группы
     EMOTION_GROUPS = {
         'growth': {
             'name': '🌱 Эмоции восстановления и роста',
-            'categories': ['joy', 'interest', 'calm']
+            'emotions': [
+                # Радость/Удовлетворение
+                'радость', 'счастье', 'восторг', 'удовлетворение', 'благодарность', 
+                'вдохновение', 'эйфория', 'блаженство', 'ликование', 'восхищение', 'умиление',
+                # Интерес/Любопытство
+                'интерес', 'любопытство', 'увлечённость', 'предвкушение', 'азарт', 
+                'энтузиазм', 'воодушевление',
+                # Спокойствие/Умиротворение
+                'спокойствие', 'умиротворение', 'расслабленность', 'безмятежность', 
+                'принятие', 'гармония', 'баланс', 'центрированность', 'покой'
+            ]
         },
         'tension': {
-            'name': '🌪 Эмоции напряжения и сигнала', 
-            'categories': ['anxiety', 'sadness', 'anger', 'shame', 'fatigue']
+            'name': '🌪 Эмоции напряжения и сигнала',
+            'emotions': [
+                # Тревога/Беспокойство
+                'тревога', 'беспокойство', 'нервозность', 'волнение', 'напряжение', 
+                'страх', 'паника', 'опасения', 'встревоженность',
+                # Грусть/Печаль
+                'грусть', 'печаль', 'тоска', 'уныние', 'разочарование', 'сожаление', 
+                'меланхолия', 'горе', 'скорбь', 'подавленность',
+                # Злость/Раздражение
+                'злость', 'раздражение', 'гнев', 'возмущение', 'обида', 'фрустрация', 
+                'досада', 'негодование', 'ярость', 'недовольство',
+                # Стыд/Вина
+                'стыд', 'вина', 'смущение', 'неловкость', 'самокритика', 'раскаяние', 
+                'угрызения совести',
+                # Усталость/Истощение
+                'усталость', 'истощение', 'вялость', 'апатия', 'безразличие', 
+                'выгорание', 'изнеможение', 'опустошённость'
+            ]
         },
         'neutral': {
-            'name': '⚖ Нейтральные / прочие состояния',
-            'categories': ['excitement']  # и любые другие
+            'name': '⚖ Нейтральные/прочие состояния',
+            'emotions': [
+                # Сюда попадает все остальное
+                'оживление', 'энергия', 'бодрость', 'живость', 'активность', 
+                'подъём', 'драйв', 'динамизм'
+            ]
         }
     }
     
@@ -93,29 +123,46 @@ class WeeklyAnalyzer:
             logger.error(f"Failed to generate summary for user {user_id}: {e}")
             return "Не удалось сформировать сводку. Попробуйте позже."
     
+    def _get_emotion_group(self, emotion: str) -> str:
+        """Определить группу эмоции по четким спискам"""
+        emotion = self._normalize_emotion(emotion)
+        if not emotion:
+            return 'neutral'
+        
+        emotion = emotion.lower().strip()
+        
+        # Проверяем в каждой группе
+        for group_key, group_data in self.EMOTION_GROUPS.items():
+            if emotion in group_data['emotions']:
+                return group_key
+        
+        # Если не найдено - нейтральная
+        return 'neutral'
+    
     def _analyze_emotions_by_groups(self, entries) -> Dict:
         """Анализ эмоций по новым группам"""
-        # Сначала получаем все эмоции как раньше
-        emotion_freq = self._analyze_emotions(entries)
-        
-        # Группируем по категориям
+        # Группируем эмоции
         grouped_emotions = {
             'growth': defaultdict(int),
             'tension': defaultdict(int), 
             'neutral': defaultdict(int)
         }
         
-        # Подсчитываем эмоции по группам
-        for emotion, count in emotion_freq.items():
-            group = self._get_emotion_group(emotion)
-            grouped_emotions[group][emotion] += count
+        for entry in entries:
+            if entry.emotions:
+                emotions = self._parse_emotions(entry.emotions)
+                for emotion in emotions:
+                    normalized = self._normalize_emotion(emotion)
+                    if normalized:
+                        group = self._get_emotion_group(normalized)
+                        grouped_emotions[group][normalized] += 1
         
         # Формируем результат
         result = {}
         for group_key, group_info in self.EMOTION_GROUPS.items():
             emotions_in_group = dict(grouped_emotions[group_key])
             total_count = sum(emotions_in_group.values())
-            top_emotions = sorted(emotions_in_group.items(), key=lambda x: x[1], reverse=True)[:3]
+            top_emotions = sorted(emotions_in_group.items(), key=lambda x: x[1], reverse=True)[:5]
             
             result[group_key] = {
                 'name': group_info['name'],
@@ -139,82 +186,77 @@ class WeeklyAnalyzer:
             if entry.cause and entry.emotions:
                 emotions = self._parse_emotions(entry.emotions)
                 
-                # Определяем группу эмоций для этой записи
-                emotion_groups = [self._get_emotion_group(emotion) for emotion in emotions]
+                # Определяем к какой группе относится эта запись
+                emotion_groups = []
+                for emotion in emotions:
+                    normalized = self._normalize_emotion(emotion)
+                    if normalized:
+                        group = self._get_emotion_group(normalized)
+                        emotion_groups.append(group)
                 
-                # Если есть эмоции напряжения, триггер относим к напряжению
+                # Приоритет: tension > growth > neutral
                 if 'tension' in emotion_groups:
-                    grouped_triggers['tension'].append(entry.cause)
-                # Если есть эмоции роста, триггер относим к росту
+                    grouped_triggers['tension'].append(entry.cause.strip())
                 elif 'growth' in emotion_groups:
-                    grouped_triggers['growth'].append(entry.cause)
-                # Иначе к нейтральным
+                    grouped_triggers['growth'].append(entry.cause.strip())
                 else:
-                    grouped_triggers['neutral'].append(entry.cause)
+                    grouped_triggers['neutral'].append(entry.cause.strip())
         
         # Формируем результат
         result = {}
-        for group_key, group_info in self.EMOTION_GROUPS.items():
+        trigger_names = {
+            'growth': '🌱 Что спровоцировало эмоции восстановления и роста',
+            'tension': '🌪 Триггеры эмоций напряжения и сигнала',
+            'neutral': '⚖ Триггеры нейтральных эмоций'
+        }
+        
+        for group_key in ['growth', 'tension', 'neutral']:
             triggers = grouped_triggers[group_key]
             result[group_key] = {
-                'name': group_info['name'].replace('Эмоции', 'Триггеры эмоций'),
+                'name': trigger_names[group_key],
                 'triggers': triggers,
                 'count': len(triggers)
             }
         
         return result
     
-    def _get_emotion_group(self, emotion: str) -> str:
-        """Определить группу эмоции"""
-        emotion = emotion.lower().strip()
-        
-        # Проверяем в каждой категории
-        for group_key, group_info in self.EMOTION_GROUPS.items():
-            for category in group_info['categories']:
-                category_emotions = self.texts.EMOTION_CATEGORIES.get(category, {}).get('emotions', [])
-                if emotion in category_emotions:
-                    return group_key
-        
-        # Если не найдено - нейтральная
-        return 'neutral'
-    
     def _format_enhanced_summary(self, emotion_analysis, trigger_analysis, peak_hour, peak_period, total_entries, insights):
         """Форматирование новой сводки"""
         
-        # Формируем блоки эмоций
-        emotion_blocks = []
+        summary_parts = [
+            "📊 <b>Твоя неделя в эмоциях</b>\n",
+            "<b>🎭 Эмоции по группам:</b>\n"
+        ]
+        
+        # Формируем блоки эмоций (показываем все группы, даже с 0)
         for group_key in ['growth', 'tension', 'neutral']:
             group_data = emotion_analysis[group_key]
+            
             if group_data['total_count'] > 0:
                 top_emotions_str = ', '.join([f"{emotion} ({count})" for emotion, count in group_data['top_emotions']])
-                emotion_blocks.append(f"<b>{group_data['name']}:</b> {group_data['total_count']} раз\n{top_emotions_str}")
+                summary_parts.append(f"<b>{group_data['name']}:</b> {group_data['total_count']} раз")
+                summary_parts.append(f"{top_emotions_str}\n")
+            else:
+                summary_parts.append(f"<b>{group_data['name']}:</b> 0 раз\n")
         
-        # Формируем блоки триггеров
-        trigger_blocks = []
+        summary_parts.append("<b>🔍 Что влияло на эмоции:</b>\n")
+        
+        # Формируем блоки триггеров (только если есть триггеры)
         for group_key in ['growth', 'tension', 'neutral']:
             group_data = trigger_analysis[group_key]
             if group_data['count'] > 0:
-                # Берем первые 3 триггера как примеры
-                sample_triggers = group_data['triggers'][:3]
-                triggers_str = '; '.join(sample_triggers)
-                if len(group_data['triggers']) > 3:
-                    triggers_str += f" (и ещё {len(group_data['triggers']) - 3})"
-                trigger_blocks.append(f"<b>{group_data['name']}:</b>\n{triggers_str}")
-        
-        # Собираем итоговую сводку
-        summary_parts = [
-            "📊 <b>Твоя неделя в эмоциях</b>\n"
-        ]
-        
-        if emotion_blocks:
-            summary_parts.append("<b>🎭 Эмоции по группам:</b>")
-            summary_parts.extend(emotion_blocks)
-            summary_parts.append("")
-        
-        if trigger_blocks:
-            summary_parts.append("<b>🔍 Что влияло на эмоции:</b>")
-            summary_parts.extend(trigger_blocks)
-            summary_parts.append("")
+                # Показываем до 5 триггеров
+                sample_triggers = group_data['triggers'][:5]
+                triggers_formatted = []
+                for trigger in sample_triggers:
+                    triggers_formatted.append(f"• {trigger}")
+                
+                triggers_str = '\n'.join(triggers_formatted)
+                if len(group_data['triggers']) > 5:
+                    triggers_str += f"\n<i>(и ещё {len(group_data['triggers']) - 5})</i>"
+                
+                summary_parts.append(f"<b>{group_data['name']}:</b>")
+                summary_parts.append(f"{triggers_str}\n")
         
         summary_parts.extend([
             f"<b>⏰ Пик активности:</b> {peak_hour:02d}:00 ({peak_period})",
@@ -260,49 +302,14 @@ class WeeklyAnalyzer:
             tension_triggers = trigger_analysis['tension']['triggers']
             if len(tension_triggers) >= 2:
                 insights.append(f"🛡️ <b>Зоны внимания:</b> стоит подумать о стратегиях работы с повторяющимися стрессорами.")
+        elif len(entries) >= 2:
+            # Простые инсайты для небольшого количества записей
+            if growth_count > tension_count:
+                insights.append("✨ Здорово, что преобладают позитивные эмоции!")
+            elif tension_count > growth_count:
+                insights.append("🤗 Замечать сложные эмоции — важный шаг к их пониманию.")
         
         return "\n\n".join(insights) if insights else ""
-    
-    def _generate_simple_insights(self, entries, emotion_analysis) -> str:
-        """Generate simple insights for small number of entries"""
-        if len(entries) < 2:
-            return ""
-        
-        insights = []
-        
-        # Простой анализ для небольшого количества записей
-        if len(entries) == 2:
-            insights.append("💡 <b>Начало пути:</b> У тебя уже 2 записи! Продолжай отслеживать эмоции для выявления паттернов.")
-        elif len(entries) == 3:
-            insights.append("💡 <b>Хороший прогресс:</b> 3 записи позволяют увидеть первые тенденции в твоём эмоциональном состоянии.")
-        elif len(entries) == 4:
-            insights.append("💡 <b>Формируется картина:</b> 4 записи дают более ясное представление о твоих эмоциональных паттернах.")
-        
-        # Быстрый анализ групп эмоций
-        growth_count = emotion_analysis['growth']['total_count']
-        tension_count = emotion_analysis['tension']['total_count']
-        
-        if growth_count > tension_count:
-            insights.append("✨ Здорово, что преобладают позитивные эмоции!")
-        elif tension_count > growth_count:
-            insights.append("🤗 Замечать сложные эмоции — важный шаг к их пониманию.")
-        
-        return "\n\n".join(insights)
-    
-    # Оставляем старые методы для совместимости, но используем новую логику
-    def _analyze_emotions(self, entries) -> Dict[str, int]:
-        """Extract and count emotion frequencies with normalization"""
-        emotion_counts = Counter()
-        
-        for entry in entries:
-            if entry.emotions:
-                emotions = self._parse_emotions(entry.emotions)
-                for emotion in emotions:
-                    normalized = self._normalize_emotion(emotion)
-                    if normalized:
-                        emotion_counts[normalized] += 1
-        
-        return dict(emotion_counts)
     
     def _parse_emotions(self, emotions_str: str) -> List[str]:
         """Parse emotions from JSON or plain text"""
@@ -322,6 +329,9 @@ class WeeklyAnalyzer:
     
     def _normalize_emotion(self, emotion: str) -> Optional[str]:
         """Normalize emotion to base form (simple stemming for Russian)"""
+        if not emotion or not isinstance(emotion, str):
+            return None
+            
         emotion = emotion.strip().lower()
         
         if len(emotion) < 2:
@@ -373,41 +383,12 @@ class WeeklyAnalyzer:
         for ending in ['ый', 'ая', 'ое', 'ые', 'ой', 'ей', 'ён', 'на', 'но', 'ны']:
             if emotion.endswith(ending) and len(emotion) > len(ending) + 2:
                 base = emotion[:-len(ending)]
-                # Check if base form exists in our emotion categories
-                for category in self.texts.EMOTION_CATEGORIES.values():
-                    if base in category['emotions']:
+                # Check if base form exists in our emotion lists
+                for group_data in self.EMOTION_GROUPS.values():
+                    if base in group_data['emotions']:
                         return base
         
         return emotion
-    
-    def _analyze_triggers(self, entries) -> Dict[str, int]:
-        """Extract and count trigger/cause frequencies"""
-        trigger_counts = Counter()
-        
-        # Russian stop words to filter out
-        stop_words = {
-            'и', 'в', 'на', 'с', 'по', 'для', 'из', 'к', 'от', 'у', 'о', 
-            'за', 'при', 'до', 'после', 'через', 'между', 'над', 'под',
-            'что', 'как', 'где', 'когда', 'почему', 'который', 'которая',
-            'это', 'то', 'так', 'там', 'тут', 'здесь', 'сейчас', 'потом',
-            'был', 'была', 'было', 'были', 'есть', 'будет', 'стал', 'стала'
-        }
-        
-        for entry in entries:
-            if entry.cause:
-                cause_text = entry.cause.lower().strip()
-                
-                # Extract meaningful words (simple keyword extraction)
-                words = cause_text.replace(',', ' ').replace('.', ' ').split()
-                
-                for word in words:
-                    word = word.strip('.,!?;:()[]{}"\'-')
-                    
-                    # Filter short words and stop words
-                    if len(word) >= 3 and word not in stop_words:
-                        trigger_counts[word] += 1
-        
-        return dict(trigger_counts)
     
     def _analyze_time_distribution(self, entries) -> Dict[int, int]:
         """Analyze distribution by hour of day"""
@@ -418,13 +399,6 @@ class WeeklyAnalyzer:
             hour_counts[hour] += 1
         
         return dict(hour_counts)
-    
-    def _get_top_items(self, frequency_dict: Dict[str, int], limit: int = 5) -> List[Tuple[str, int]]:
-        """Get top N items by frequency"""
-        if not frequency_dict:
-            return []
-        
-        return sorted(frequency_dict.items(), key=lambda x: x[1], reverse=True)[:limit]
     
     async def export_csv(self, user_id: int) -> Optional[str]:
         """Export user data as CSV string"""
@@ -515,13 +489,21 @@ def test_analyzer():
         # Create test user
         user = db.create_user(12345, 67890)
         
+        # Test emotion grouping
+        test_emotions = ['радость', 'тревога', 'спокойствие', 'усталость', 'возмущение', 'апатия']
+        
+        print("Testing emotion grouping:")
+        for emotion in test_emotions:
+            group = analyzer._get_emotion_group(emotion)
+            print(f"  {emotion} -> {group}")
+        
         # Add test entries with different emotion groups
         test_entries = [
             {'emotions': '["радость"]', 'cause': 'закончил проект'},
             {'emotions': '["тревога"]', 'cause': 'много работы'},  
             {'emotions': '["спокойствие"]', 'cause': 'вечер дома'},
             {'emotions': '["усталость"]', 'cause': 'долгий день'},
-            {'emotions': '["интерес"]', 'cause': 'новая книга'},
+            {'emotions': '["возмущение"]', 'cause': 'пробка на дороге'},
         ]
         
         for entry_data in test_entries:
@@ -529,10 +511,10 @@ def test_analyzer():
         
         import asyncio
         summary = asyncio.run(analyzer.generate_summary(12345))
-        print("Enhanced summary:")
+        print("\nFixed summary:")
         print(summary)
         
-        print("\nEnhanced analyzer tests passed!")
+        print("\nFixed analyzer tests completed!")
         
     finally:
         os.unlink(test_db_path)
