@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
 EmoJournal Telegram Bot - Main Application
-Emotion tracking bot with fixed scheduling and performance
+Emotion tracking bot with fixed scheduling and security
 """
 
 import logging
 import os
 import asyncio
 import json
+import time
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
+from collections import defaultdict
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot, BotCommand
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
@@ -19,6 +21,8 @@ from .db import Database, User, Entry
 from .scheduler import FixedScheduler
 from .i18n import Texts
 from .analysis import WeeklyAnalyzer
+from .security import sanitize_user_input, InputValidator
+from .rate_limiter import check_user_limits, command_rate_limiter
 
 # Configure logging
 logging.basicConfig(
@@ -27,6 +31,66 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+class UserStateManager:
+    """Простое управление состояниями пользователей с автоочисткой"""
+    
+    def __init__(self, cleanup_interval: int = 3600):  # 1 час
+        self.states: Dict[int, Dict[str, Any]] = {}
+        self.cleanup_interval = cleanup_interval
+        self.last_cleanup = time.time()
+    
+    def set_state(self, user_id: int, state: str, data: Dict[str, Any] = None):
+        """Установить состояние пользователя"""
+        self._cleanup_if_needed()
+        
+        if user_id not in self.states:
+            self.states[user_id] = {}
+        
+        self.states[user_id].update({
+            'state': state,
+            'timestamp': time.time(),
+            **(data or {})
+        })
+    
+    def get_state(self, user_id: int) -> Dict[str, Any]:
+        """Получить состояние пользователя"""
+        self._cleanup_if_needed()
+        
+        user_state = self.states.get(user_id, {})
+        
+        # Проверить не устарело ли состояние (24 часа)
+        if user_state.get('timestamp', 0) < time.time() - 86400:
+            self.clear_state(user_id)
+            return {}
+        
+        return user_state
+    
+    def clear_state(self, user_id: int):
+        """Очистить состояние пользователя"""
+        if user_id in self.states:
+            del self.states[user_id]
+    
+    def _cleanup_if_needed(self):
+        """Периодическая очистка устаревших состояний"""
+        now = time.time()
+        if now - self.last_cleanup < self.cleanup_interval:
+            return
+        
+        cutoff_time = now - 86400  # 24 часа
+        expired_users = [
+            user_id for user_id, state in self.states.items()
+            if state.get('timestamp', 0) < cutoff_time
+        ]
+        
+        for user_id in expired_users:
+            del self.states[user_id]
+        
+        self.last_cleanup = now
+        
+        if expired_users:
+            logger.info(f"Cleaned up {len(expired_users)} expired user states")
+
+
 class EmoJournalBot:
     def __init__(self):
         self.db = Database()
@@ -34,13 +98,13 @@ class EmoJournalBot:
         self.texts = Texts()
         self.analyzer = WeeklyAnalyzer(self.db)
         
+        # Безопасное управление состояниями
+        self.user_state_manager = UserStateManager()
+        
         # Environment validation
         self.bot_token = self._get_env_var('TELEGRAM_BOT_TOKEN')
         self.webhook_url = self._get_env_var('WEBHOOK_URL')
         self.port = int(os.getenv('PORT', '10000'))
-        
-        # User states for multi-step conversations (simplified in-memory storage)
-        self.user_states: Dict[int, Dict[str, Any]] = {}
         
     def _get_env_var(self, name: str) -> str:
         value = os.getenv(name)
@@ -51,63 +115,88 @@ class EmoJournalBot:
     
     def _set_user_state(self, user_id: int, state: str, data: Dict[str, Any] = None):
         """Set user conversation state"""
-        if user_id not in self.user_states:
-            self.user_states[user_id] = {}
-        self.user_states[user_id]['state'] = state
-        if data:
-            self.user_states[user_id].update(data)
+        self.user_state_manager.set_state(user_id, state, data)
     
     def _get_user_state(self, user_id: int) -> Dict[str, Any]:
         """Get user conversation state"""
-        return self.user_states.get(user_id, {})
+        return self.user_state_manager.get_state(user_id)
     
     def _clear_user_state(self, user_id: int):
         """Clear user conversation state"""
-        if user_id in self.user_states:
-            del self.user_states[user_id]
+        self.user_state_manager.clear_state(user_id)
+    
+    async def _check_rate_limits(self, update: Update, command: str = "") -> bool:
+        """Проверить rate limits и отправить сообщение если превышен"""
+        user_id = update.effective_user.id
+        message_text = getattr(update.message, 'text', '') if update.message else ''
+        
+        allowed, reason = check_user_limits(user_id, message_text, command)
+        
+        if not allowed:
+            if update.message:
+                await update.message.reply_text(reason)
+            elif update.callback_query:
+                await update.callback_query.answer(reason, show_alert=True)
+            return False
+        
+        return True
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command with onboarding"""
+        if not await self._check_rate_limits(update, 'start'):
+            return
+            
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
         
         # Clear any existing state
         self._clear_user_state(user_id)
         
-        # Create or get user
-        user = self.db.get_user(user_id)
-        if not user:
-            user = self.db.create_user(user_id, chat_id)
-            # Start daily scheduling for new user (асинхронно, не блокируем ответ)
-            asyncio.create_task(self.scheduler.start_user_schedule(user_id))
-        
-        # Set bot commands menu (только один раз)
-        if not hasattr(self, '_commands_set'):
-            commands = [
-                BotCommand("start", "🎭 Запустить бота"),
-                BotCommand("note", "📝 Записать эмоцию сейчас"),
-                BotCommand("help", "❓ Помощь и информация"),
-                BotCommand("summary", "📊 Сводка за неделю"),
-                BotCommand("export", "📥 Экспорт данных в CSV"),
-                BotCommand("timezone", "🌍 Настройка часового пояса"),
-                BotCommand("pause", "⏸️ Приостановить уведомления"),
-                BotCommand("resume", "▶️ Возобновить уведомления"),
-                BotCommand("stats", "📈 Статистика бота"),
-                BotCommand("delete_me", "🗑️ Удалить все данные")
-            ]
+        try:
+            # Create or get user
+            user = self.db.get_user(user_id)
+            if not user:
+                user = self.db.create_user(user_id, chat_id)
+                # Start daily scheduling for new user (асинхронно, не блокируем ответ)
+                asyncio.create_task(self.scheduler.start_user_schedule(user_id))
+                logger.info(f"Created new user {user_id}")
             
-            # Устанавливаем команды асинхронно
-            asyncio.create_task(context.bot.set_my_commands(commands))
-            self._commands_set = True
-        
-        # Моментальный ответ пользователю
-        await update.message.reply_text(
-            self.texts.ONBOARDING,
-            parse_mode='HTML'
-        )
+            # Set bot commands menu (только один раз)
+            if not hasattr(self, '_commands_set'):
+                commands = [
+                    BotCommand("start", "🎭 Запустить бота"),
+                    BotCommand("note", "📝 Записать эмоцию сейчас"),
+                    BotCommand("help", "❓ Помощь и информация"),
+                    BotCommand("summary", "📊 Сводка за неделю"),
+                    BotCommand("export", "📥 Экспорт данных в CSV"),
+                    BotCommand("timezone", "🌍 Настройка часового пояса"),
+                    BotCommand("pause", "⏸️ Приостановить уведомления"),
+                    BotCommand("resume", "▶️ Возобновить уведомления"),
+                    BotCommand("stats", "📈 Статистика бота"),
+                    BotCommand("delete_me", "🗑️ Удалить все данные")
+                ]
+                
+                # Устанавливаем команды асинхронно
+                asyncio.create_task(context.bot.set_my_commands(commands))
+                self._commands_set = True
+            
+            # Моментальный ответ пользователю
+            await update.message.reply_text(
+                self.texts.ONBOARDING,
+                parse_mode='HTML'
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in start command for user {user_id}: {e}")
+            await update.message.reply_text(
+                "Произошла ошибка при запуске. Попробуйте позже."
+            )
     
     async def note_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /note command for manual emotion entry"""
+        if not await self._check_rate_limits(update, 'note'):
+            return
+            
         user_id = update.effective_user.id
         self._clear_user_state(user_id)
         
@@ -124,6 +213,9 @@ class EmoJournalBot:
     
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command"""
+        if not await self._check_rate_limits(update, 'help'):
+            return
+            
         await update.message.reply_text(
             self.texts.HELP,
             parse_mode='HTML'
@@ -131,16 +223,28 @@ class EmoJournalBot:
     
     async def timezone_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /timezone command"""
+        if not await self._check_rate_limits(update, 'timezone'):
+            return
+            
         user_id = update.effective_user.id
         
         if context.args:
             tz_name = ' '.join(context.args)
+            
+            # Валидация timezone
+            tz_validated = sanitize_user_input(tz_name, "general")
+            if not tz_validated:
+                await update.message.reply_text(
+                    "Неверный формат часового пояса. Используйте формат IANA, например: Europe/Moscow"
+                )
+                return
+                
             try:
                 import zoneinfo
-                zoneinfo.ZoneInfo(tz_name)  # Validate timezone
-                self.db.update_user_timezone(user_id, tz_name)
+                zoneinfo.ZoneInfo(tz_validated)  # Validate timezone
+                self.db.update_user_timezone(user_id, tz_validated)
                 await update.message.reply_text(
-                    f"Часовой пояс установлен: {tz_name}"
+                    f"Часовой пояс установлен: {tz_validated}"
                 )
                 # Reschedule with new timezone (асинхронно)
                 asyncio.create_task(self.scheduler.start_user_schedule(user_id))
@@ -158,38 +262,64 @@ class EmoJournalBot:
     
     async def summary_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /summary command - works with any number of entries"""
+        if not await self._check_rate_limits(update, 'summary'):
+            return
+            
         user_id = update.effective_user.id
         days = 7
         
         if context.args:
             try:
-                days = int(context.args[0])
-                days = max(1, min(days, 90))  # Limit to 1-90 days
+                days_input = int(context.args[0])
+                days = max(1, min(days_input, 90))  # Limit to 1-90 days
             except ValueError:
-                pass
+                await update.message.reply_text(
+                    "Неверный формат. Используйте: /summary 7 (для 7 дней)"
+                )
+                return
         
-        summary = await self.analyzer.generate_summary(user_id, days)
-        await update.message.reply_text(summary, parse_mode='HTML')
+        try:
+            summary = await self.analyzer.generate_summary(user_id, days)
+            await update.message.reply_text(summary, parse_mode='HTML')
+        except Exception as e:
+            logger.error(f"Error generating summary for user {user_id}: {e}")
+            await update.message.reply_text(
+                "Не удалось сформировать сводку. Попробуйте позже."
+            )
     
     async def export_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /export command"""
-        user_id = update.effective_user.id
-        csv_data = await self.analyzer.export_csv(user_id)
-        
-        if csv_data:
-            import io
-            csv_file = io.BytesIO(csv_data.encode('utf-8'))
-            csv_file.name = f"emojournal_export_{datetime.now().strftime('%Y%m%d')}.csv"
+        if not await self._check_rate_limits(update, 'export'):
+            return
             
-            await update.message.reply_document(
-                document=csv_file,
-                caption="Ваши данные в формате CSV"
+        user_id = update.effective_user.id
+        
+        try:
+            csv_data = await self.analyzer.export_csv(user_id)
+            
+            if csv_data:
+                import io
+                csv_file = io.BytesIO(csv_data.encode('utf-8'))
+                csv_file.name = f"emojournal_export_{datetime.now().strftime('%Y%m%d')}.csv"
+                
+                await update.message.reply_document(
+                    document=csv_file,
+                    caption="Ваши данные в формате CSV"
+                )
+            else:
+                await update.message.reply_text("Пока нет данных для экспорта")
+                
+        except Exception as e:
+            logger.error(f"Error exporting data for user {user_id}: {e}")
+            await update.message.reply_text(
+                "Не удалось экспортировать данные. Попробуйте позже."
             )
-        else:
-            await update.message.reply_text("Пока нет данных для экспорта")
     
     async def delete_me_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /delete_me command"""
+        if not await self._check_rate_limits(update, 'delete_me'):
+            return
+            
         user_id = update.effective_user.id
         
         keyboard = [
@@ -209,58 +339,90 @@ class EmoJournalBot:
     
     async def pause_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /pause command"""
+        if not await self._check_rate_limits(update, 'pause'):
+            return
+            
         user_id = update.effective_user.id
-        self.db.update_user_paused(user_id, True)
-        asyncio.create_task(self.scheduler.stop_user_schedule(user_id))
         
-        await update.message.reply_text("Уведомления приостановлены. Используйте /resume для возобновления.")
+        try:
+            self.db.update_user_paused(user_id, True)
+            asyncio.create_task(self.scheduler.stop_user_schedule(user_id))
+            
+            await update.message.reply_text("Уведомления приостановлены. Используйте /resume для возобновления.")
+        except Exception as e:
+            logger.error(f"Error pausing user {user_id}: {e}")
+            await update.message.reply_text("Произошла ошибка. Попробуйте позже.")
     
     async def resume_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /resume command"""
+        if not await self._check_rate_limits(update, 'resume'):
+            return
+            
         user_id = update.effective_user.id
-        self.db.update_user_paused(user_id, False)
-        asyncio.create_task(self.scheduler.start_user_schedule(user_id))
         
-        await update.message.reply_text("Уведомления возобновлены!")
+        try:
+            self.db.update_user_paused(user_id, False)
+            asyncio.create_task(self.scheduler.start_user_schedule(user_id))
+            
+            await update.message.reply_text("Уведомления возобновлены!")
+        except Exception as e:
+            logger.error(f"Error resuming user {user_id}: {e}")
+            await update.message.reply_text("Произошла ошибка. Попробуйте позже.")
     
     async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /stats command"""
-        stats = self.db.get_global_stats()
-        await update.message.reply_text(
-            f"📊 Статистика EmoJournal:\n\n"
-            f"👥 Всего пользователей: {stats['total_users']}\n"
-            f"📝 Всего записей: {stats['total_entries']}\n"
-            f"📅 Активных за неделю: {stats['active_weekly']}"
-        )
+        if not await self._check_rate_limits(update, 'stats'):
+            return
+            
+        try:
+            stats = self.db.get_global_stats()
+            await update.message.reply_text(
+                f"📊 Статистика EmoJournal:\n\n"
+                f"👥 Всего пользователей: {stats['total_users']}\n"
+                f"📝 Всего записей: {stats['total_entries']}\n"
+                f"📅 Активных за неделю: {stats['active_weekly']}"
+            )
+        except Exception as e:
+            logger.error(f"Error getting stats: {e}")
+            await update.message.reply_text("Не удалось получить статистику.")
     
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle inline keyboard callbacks"""
         query = update.callback_query
+        
+        # Check rate limits for callbacks
+        if not await self._check_rate_limits(update):
+            return
+            
         await query.answer()
         
         data = query.data
         user_id = query.from_user.id
         
-        if data.startswith("respond_"):
-            await self._start_emotion_flow(query, user_id)
-        elif data.startswith("snooze_"):
-            await self._snooze_ping(query, user_id)
-        elif data.startswith("skip_"):
-            await self._skip_today(query, user_id)
-        elif data.startswith("emotion_"):
-            await self._handle_emotion_selection(query, data)
-        elif data.startswith("delete_confirm_"):
-            await self._confirm_delete(query, user_id)
-        elif data == "delete_cancel":
-            await query.edit_message_text("Удаление отменено")
-        elif data == "show_emotions":
-            await self._show_emotion_categories(query)
-        elif data.startswith("category_"):
-            await self._show_category_emotions(query, data)
-        elif data == "other_emotion":
-            await self._request_custom_emotion(query)
-        elif data == "skip_cause":
-            await self._skip_cause_and_finish(query, user_id)
+        try:
+            if data.startswith("respond_"):
+                await self._start_emotion_flow(query, user_id)
+            elif data.startswith("snooze_"):
+                await self._snooze_ping(query, user_id)
+            elif data.startswith("skip_"):
+                await self._skip_today(query, user_id)
+            elif data.startswith("emotion_"):
+                await self._handle_emotion_selection(query, data)
+            elif data.startswith("delete_confirm_"):
+                await self._confirm_delete(query, user_id)
+            elif data == "delete_cancel":
+                await query.edit_message_text("Удаление отменено")
+            elif data == "show_emotions":
+                await self._show_emotion_categories(query)
+            elif data.startswith("category_"):
+                await self._show_category_emotions(query, data)
+            elif data == "other_emotion":
+                await self._request_custom_emotion(query)
+            elif data == "skip_cause":
+                await self._skip_cause_and_finish(query, user_id)
+        except Exception as e:
+            logger.error(f"Error handling callback {data} for user {user_id}: {e}")
+            await query.edit_message_text("Произошла ошибка. Попробуйте позже.")
     
     async def _start_emotion_flow(self, query, user_id: int):
         """Start emotion recording flow"""
@@ -336,8 +498,14 @@ class EmoJournalBot:
         emotion = data.replace("emotion_", "")
         user_id = query.from_user.id
         
+        # Validate emotion
+        emotion_validated = sanitize_user_input(emotion, "emotion")
+        if not emotion_validated:
+            await query.edit_message_text("Некорректная эмоция. Попробуйте еще раз.")
+            return
+        
         # Store emotion in user state for the next step
-        self._set_user_state(user_id, 'waiting_for_cause', {'emotion': emotion})
+        self._set_user_state(user_id, 'waiting_for_cause', {'emotion': emotion_validated})
         
         # Ask for cause/trigger
         keyboard = [
@@ -346,7 +514,7 @@ class EmoJournalBot:
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.edit_message_text(
-            f"✨ Выбрана эмоция: {emotion.title()}\n\n"
+            f"✨ Выбрана эмоция: {emotion_validated.title()}\n\n"
             f"{self.texts.CAUSE_QUESTION}",
             reply_markup=reply_markup
         )
@@ -367,15 +535,19 @@ class EmoJournalBot:
         emotion = user_state.get('emotion', 'неизвестно')
         
         # Save emotion without cause
-        await self._save_emotion_entry(user_id, emotion, '')
-        self._clear_user_state(user_id)
-        
-        await query.edit_message_text(
-            f"✨ Спасибо!\n\n"
-            f"Записана эмоция: {emotion.title()}\n\n"
-            f"Уже сам факт, что ты это заметил(а) и назвал(а), — шаг к ясности.\n\n"
-            f"💡 Чтобы записать ещё одну эмоцию, используй /note"
-        )
+        try:
+            await self._save_emotion_entry(user_id, emotion, '')
+            self._clear_user_state(user_id)
+            
+            await query.edit_message_text(
+                f"✨ Спасибо!\n\n"
+                f"Записана эмоция: {emotion.title()}\n\n"
+                f"Уже сам факт, что ты это заметил(а) и назвал(а), — шаг к ясности.\n\n"
+                f"💡 Чтобы записать ещё одну эмоцию, используй /note"
+            )
+        except Exception as e:
+            logger.error(f"Error saving emotion entry: {e}")
+            await query.edit_message_text("Произошла ошибка при сохранении. Попробуйте позже.")
     
     async def _snooze_ping(self, query, user_id: int):
         """Snooze notification for 15 minutes"""
@@ -389,25 +561,40 @@ class EmoJournalBot:
     
     async def _confirm_delete(self, query, user_id: int):
         """Confirm user data deletion"""
-        self.db.delete_user_data(user_id)
-        asyncio.create_task(self.scheduler.stop_user_schedule(user_id))
-        self._clear_user_state(user_id)
-        
-        await query.edit_message_text(
-            "Все ваши данные удалены.\n\n"
-            "Спасибо, что использовали EmoJournal!\n"
-            "Если захотите начать заново — отправьте /start"
-        )
+        try:
+            self.db.delete_user_data(user_id)
+            asyncio.create_task(self.scheduler.stop_user_schedule(user_id))
+            self._clear_user_state(user_id)
+            
+            await query.edit_message_text(
+                "Все ваши данные удалены.\n\n"
+                "Спасибо, что использовали EmoJournal!\n"
+                "Если захотите начать заново — отправьте /start"
+            )
+        except Exception as e:
+            logger.error(f"Error deleting user data: {e}")
+            await query.edit_message_text("Произошла ошибка при удалении данных.")
     
     async def handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle text messages (emotion/cause/note input)"""
+        """Handle text messages (emotion/cause/note input) with security validation"""
+        if not await self._check_rate_limits(update):
+            return
+            
         user_id = update.effective_user.id
-        text = update.message.text.strip()
+        raw_text = update.message.text
+        
         user_state = self._get_user_state(user_id)
         
         if user_state.get('state') == 'waiting_for_custom_emotion':
-            # User entered custom emotion, now ask for cause
-            self._set_user_state(user_id, 'waiting_for_cause', {'emotion': text})
+            # User entered custom emotion, validate and ask for cause
+            emotion = sanitize_user_input(raw_text, "emotion")
+            if not emotion:
+                await update.message.reply_text(
+                    "Некорректное название эмоции. Попробуйте использовать простые слова без специальных символов."
+                )
+                return
+            
+            self._set_user_state(user_id, 'waiting_for_cause', {'emotion': emotion})
             
             keyboard = [
                 [InlineKeyboardButton("Пропустить", callback_data="skip_cause")]
@@ -415,30 +602,47 @@ class EmoJournalBot:
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             await update.message.reply_text(
-                f"✨ Записана эмоция: {text.title()}\n\n"
+                f"✨ Записана эмоция: {emotion.title()}\n\n"
                 f"{self.texts.CAUSE_QUESTION}",
                 reply_markup=reply_markup
             )
             
         elif user_state.get('state') == 'waiting_for_cause':
-            # User entered cause/trigger, save complete entry
-            emotion = user_state.get('emotion', text)
-            cause = text
+            # User entered cause/trigger, validate and save complete entry
+            cause = sanitize_user_input(raw_text, "cause")
+            if not cause:
+                await update.message.reply_text(
+                    "Некорректное описание причины. Попробуйте написать проще."
+                )
+                return
             
-            await self._save_emotion_entry(user_id, emotion, cause)
-            self._clear_user_state(user_id)
+            emotion = user_state.get('emotion', 'неизвестно')
             
-            await update.message.reply_text(
-                f"✨ Спасибо!\n\n"
-                f"Эмоция: {emotion.title()}\n"
-                f"Триггер: {cause}\n\n"
-                f"Уже сам факт, что ты это заметил(а) и назвал(а), — шаг к ясности.\n\n"
-                f"💡 Чтобы записать ещё одну эмоцию, используй /note"
-            )
-            
+            try:
+                await self._save_emotion_entry(user_id, emotion, cause)
+                self._clear_user_state(user_id)
+                
+                await update.message.reply_text(
+                    f"✨ Спасибо!\n\n"
+                    f"Эмоция: {emotion.title()}\n"
+                    f"Триггер: {cause}\n\n"
+                    f"Уже сам факт, что ты это заметил(а) и назвал(а), — шаг к ясности.\n\n"
+                    f"💡 Чтобы записать ещё одну эмоцию, используй /note"
+                )
+            except Exception as e:
+                logger.error(f"Failed to save entry for user {user_id}: {e}")
+                await update.message.reply_text("Произошла ошибка при сохранении. Попробуйте позже.")
+                
         else:
             # Regular text message - treat as emotion
-            self._set_user_state(user_id, 'waiting_for_cause', {'emotion': text})
+            emotion = sanitize_user_input(raw_text, "emotion")
+            if not emotion:
+                await update.message.reply_text(
+                    "Не удалось распознать эмоцию. Попробуйте использовать команду /note для структурированного ввода."
+                )
+                return
+            
+            self._set_user_state(user_id, 'waiting_for_cause', {'emotion': emotion})
             
             keyboard = [
                 [InlineKeyboardButton("Пропустить", callback_data="skip_cause")]
@@ -446,13 +650,13 @@ class EmoJournalBot:
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             await update.message.reply_text(
-                f"✨ Записана эмоция: {text.title()}\n\n"
+                f"✨ Записана эмоция: {emotion.title()}\n\n"
                 f"{self.texts.CAUSE_QUESTION}",
                 reply_markup=reply_markup
             )
     
     async def _save_emotion_entry(self, user_id: int, emotion_text: str, cause_text: str = ''):
-        """Save emotion entry to database"""
+        """Save emotion entry to database with validation"""
         try:
             # Ensure user exists (auto-create if needed)
             user = self.db.get_user(user_id)
@@ -461,25 +665,35 @@ class EmoJournalBot:
                 asyncio.create_task(self.scheduler.start_user_schedule(user_id))
                 logger.info(f"Auto-created user {user_id}")
             
+            # Additional validation
+            emotion_validated = sanitize_user_input(emotion_text, "emotion")
+            cause_validated = sanitize_user_input(cause_text, "cause") if cause_text else ""
+            
+            if not emotion_validated:
+                raise ValueError("Invalid emotion text")
+            
             entry_data = {
-                'emotions': [emotion_text.lower()],
-                'cause': cause_text,
-                'note': f"{emotion_text}" + (f" (причина: {cause_text})" if cause_text else ""),
+                'emotions': [emotion_validated.lower()],
+                'cause': cause_validated,
+                'note': f"{emotion_validated}" + (f" (причина: {cause_validated})" if cause_validated else ""),
                 'valence': None,
                 'arousal': None
             }
             
             self.db.create_entry(
                 user_id=user_id,
-                emotions=json.dumps(entry_data['emotions']),
+                emotions=json.dumps(entry_data['emotions'], ensure_ascii=False),
                 cause=entry_data['cause'],
                 note=entry_data['note'],
                 valence=entry_data['valence'],
                 arousal=entry_data['arousal']
             )
             
+            logger.info(f"Saved emotion entry for user {user_id}: {emotion_validated}")
+            
         except Exception as e:
-            logger.error(f"Failed to save emotion entry: {e}")
+            logger.error(f"Failed to save emotion entry for user {user_id}: {e}")
+            raise
     
     def create_application(self):
         """Create and configure telegram application"""
