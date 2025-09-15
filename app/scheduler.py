@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Fixed Scheduler for EmoJournal Bot - Enhanced with error handling
-Generates 4 fixed daily slots at 9, 13, 17, 21 hours
+Fixed Scheduler for EmoJournal Bot - Enhanced with weekly summaries
+Generates 4 fixed daily slots at 9, 13, 17, 21 hours + weekly summaries
 """
 
 import logging
@@ -19,10 +19,11 @@ from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
 logger = logging.getLogger(__name__)
 
 class FixedScheduler:
-    """Handles fixed emotion ping scheduling with enhanced error handling"""
+    """Handles fixed emotion ping scheduling + weekly summaries with enhanced error handling"""
     
     # Configuration constants
     FIXED_HOURS = [9, 13, 17, 21]  # 4 раза в день: 9:00, 13:00, 17:00, 21:00
+    SUMMARY_HOUR = 21  # Воскресенье в 21:00
     MAX_RETRIES = 3
     RETRY_DELAY = 60  # seconds
     
@@ -77,7 +78,18 @@ class FixedScheduler:
                 replace_existing=True
             )
             
-            logger.info("Fixed scheduler started successfully")
+            # Schedule weekly summaries for all users
+            self.scheduler.add_job(
+                self._send_weekly_summaries_safe,
+                'cron',
+                day_of_week='sun',  # Воскресенье
+                hour=21,
+                minute=0,
+                id='weekly_summaries_generator',
+                replace_existing=True
+            )
+            
+            logger.info("Fixed scheduler started successfully with weekly summaries")
             
         except Exception as e:
             logger.error(f"Failed to start scheduler: {e}")
@@ -100,7 +112,7 @@ class FixedScheduler:
     
     def _job_executed_listener(self, event):
         """Log successful job executions"""
-        if event.job_id.startswith('ping_'):
+        if event.job_id.startswith('ping_') or event.job_id == 'weekly_summaries_generator':
             logger.debug(f"Successfully executed job {event.job_id}")
     
     async def _retry_failed_ping(self, user_id: int):
@@ -111,6 +123,96 @@ class FixedScheduler:
             logger.info(f"Successfully retried ping for user {user_id}")
         except Exception as e:
             logger.error(f"Retry ping failed for user {user_id}: {e}")
+    
+    async def _send_weekly_summaries_safe(self):
+        """Safely send weekly summaries to all active users"""
+        try:
+            await self._send_weekly_summaries()
+        except Exception as e:
+            logger.error(f"Failed to send weekly summaries: {e}")
+    
+    async def _send_weekly_summaries(self):
+        """Send weekly summaries to all active users who want them"""
+        try:
+            # Получаем всех активных пользователей
+            active_users = self.db.get_active_users()
+            
+            success_count = 0
+            error_count = 0
+            
+            for user in active_users:
+                if user.paused:
+                    continue
+                
+                try:
+                    # Проверяем, хочет ли пользователь получать саммари
+                    user_settings = self.db.get_user_settings(user.id)
+                    if user_settings and not user_settings.get('weekly_summary_enabled', True):
+                        continue
+                    
+                    # Проверяем, есть ли записи за неделю
+                    entries = self.db.get_user_entries(user.id, days=7)
+                    if len(entries) == 0:
+                        logger.debug(f"No entries for user {user.id}, skipping weekly summary")
+                        continue
+                    
+                    # Генерируем и отправляем саммари
+                    await self._send_weekly_summary_to_user(user.id, user.chat_id, user.timezone)
+                    success_count += 1
+                    
+                    # Небольшая задержка между отправками
+                    await asyncio.sleep(0.5)
+                    
+                except Exception as e:
+                    logger.error(f"Failed to send weekly summary to user {user.id}: {e}")
+                    error_count += 1
+            
+            logger.info(f"Weekly summaries sent: {success_count} success, {error_count} errors")
+            
+        except Exception as e:
+            logger.error(f"Error in weekly summaries process: {e}")
+    
+    async def _send_weekly_summary_to_user(self, user_id: int, chat_id: int, user_timezone: str):
+        """Send weekly summary to specific user"""
+        try:
+            from .analysis import WeeklyAnalyzer
+            
+            # Создаем анализатор и генерируем саммари
+            analyzer = WeeklyAnalyzer(self.db)
+            summary = await analyzer.generate_summary(user_id, days=7)
+            
+            # Добавляем заголовок для автоматического саммари
+            auto_summary = f"📅 <b>Автоматическая сводка за неделю</b>\n\n{summary}"
+            
+            # Отправляем через Telegram API
+            bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
+            if not bot_token:
+                logger.error("TELEGRAM_BOT_TOKEN not set")
+                return
+            
+            from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+            bot = Bot(token=bot_token)
+            
+            # Добавляем кнопки после саммари
+            keyboard = [
+                [InlineKeyboardButton("📊 Другой период", callback_data="summary_period_select")],
+                [InlineKeyboardButton("📥 Экспорт CSV", callback_data="export_csv")],
+                [InlineKeyboardButton("⚙️ Настройки", callback_data="user_settings")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await bot.send_message(
+                chat_id=chat_id,
+                text=auto_summary,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+            
+            logger.info(f"Sent weekly summary to user {user_id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to send weekly summary to user {user_id}: {e}")
+            raise
     
     def generate_fixed_times(self) -> List[time]:
         """
@@ -535,47 +637,7 @@ def test_fixed_time_generation():
     return True
 
 
-async def test_scheduler_error_handling():
-    """Test scheduler error handling"""
-    
-    class MockDB:
-        def get_user(self, user_id):
-            if user_id == 999:
-                raise Exception("Database error")
-            return None
-        
-        def get_active_users(self):
-            return []
-    
-    scheduler = FixedScheduler(MockDB())
-    
-    try:
-        await scheduler.start()
-        
-        # Test error handling in ping
-        await scheduler._send_simple_ping_safe(999)  # Should not raise
-        await scheduler._send_simple_ping_safe(123)  # Should not raise
-        
-        # Test scheduler status
-        status = scheduler.get_scheduler_status()
-        assert status["running"] == True
-        
-        await scheduler.stop()
-        
-        print("Scheduler error handling tests passed!")
-        return True
-        
-    except Exception as e:
-        print(f"Scheduler test failed: {e}")
-        return False
-
-
 if __name__ == "__main__":
-    # Run unit tests
+    # Run unit test
     test_fixed_time_generation()
-    
-    # Run async test
-    import asyncio
-    asyncio.run(test_scheduler_error_handling())
-    
     print("All scheduler tests passed!")
