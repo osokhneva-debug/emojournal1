@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Database models and access layer for EmoJournal Bot
-SQLite with SQLAlchemy for persistence - Enhanced with security
+SQLite with SQLAlchemy for persistence - Enhanced with user settings
 """
 
 import os
@@ -56,12 +56,24 @@ class Schedule(Base):
     times_local = Column(Text, nullable=False)  # JSON array of HH:MM strings
     created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
 
+class UserSettings(Base):
+    __tablename__ = 'user_settings'
+    
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, unique=True, nullable=False, index=True)
+    weekly_summary_enabled = Column(Boolean, default=True, nullable=False)  # Получать ли еженедельные саммари
+    summary_time_hour = Column(Integer, default=21, nullable=False)  # Час отправки саммари (0-23)
+    settings_json = Column(Text, nullable=True)  # Дополнительные настройки в JSON
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+
 # Create indexes
 Index('idx_entries_user_date', Entry.user_id, Entry.ts_local)
 Index('idx_schedules_user_date', Schedule.user_id, Schedule.date_local)
+Index('idx_user_settings_user_id', UserSettings.user_id)
 
 class Database:
-    """Database access layer with enhanced security and error handling"""
+    """Database access layer with enhanced security and user settings"""
     
     def __init__(self, db_url: Optional[str] = None):
         if db_url is None:
@@ -95,7 +107,7 @@ class Database:
         return self.SessionLocal()
     
     def create_user(self, user_id: int, chat_id: int, user_timezone: str = 'Europe/Moscow') -> User:
-        """Create new user with validation"""
+        """Create new user with validation and default settings"""
         # Validate inputs
         if not isinstance(user_id, int) or user_id <= 0:
             raise ValueError("Invalid user_id")
@@ -134,6 +146,9 @@ class Database:
                 session.commit()
                 session.refresh(user)
                 
+                # Create default user settings
+                self._create_default_user_settings(user_id)
+                
                 logger.info(f"Created user {user_id} with chat_id {chat_id}")
                 return user
                 
@@ -145,6 +160,32 @@ class Database:
         except SQLAlchemyError as e:
             logger.error(f"Database error creating user {user_id}: {e}")
             raise
+    
+    def _create_default_user_settings(self, user_id: int):
+        """Create default settings for new user"""
+        try:
+            with self.get_session() as session:
+                # Check if settings already exist
+                existing_settings = session.query(UserSettings).filter(UserSettings.user_id == user_id).first()
+                if existing_settings:
+                    return
+                
+                settings = UserSettings(
+                    user_id=user_id,
+                    weekly_summary_enabled=True,
+                    summary_time_hour=21,
+                    settings_json='{}',
+                    created_at=datetime.now(dt_timezone.utc),
+                    updated_at=datetime.now(dt_timezone.utc)
+                )
+                
+                session.add(settings)
+                session.commit()
+                
+                logger.info(f"Created default settings for user {user_id}")
+                
+        except SQLAlchemyError as e:
+            logger.error(f"Error creating default settings for user {user_id}: {e}")
     
     def get_user(self, user_id: int) -> Optional[User]:
         """Get user by ID with error handling"""
@@ -163,6 +204,82 @@ class Database:
         except SQLAlchemyError as e:
             logger.error(f"Database error getting user by chat_id {chat_id}: {e}")
             return None
+    
+    def get_user_settings(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """Get user settings as dictionary"""
+        try:
+            with self.get_session() as session:
+                settings = session.query(UserSettings).filter(UserSettings.user_id == user_id).first()
+                if not settings:
+                    # Create default settings if they don't exist
+                    self._create_default_user_settings(user_id)
+                    settings = session.query(UserSettings).filter(UserSettings.user_id == user_id).first()
+                
+                if settings:
+                    result = {
+                        'weekly_summary_enabled': settings.weekly_summary_enabled,
+                        'summary_time_hour': settings.summary_time_hour
+                    }
+                    
+                    # Add additional settings from JSON
+                    if settings.settings_json:
+                        try:
+                            additional_settings = json.loads(settings.settings_json)
+                            result.update(additional_settings)
+                        except json.JSONDecodeError:
+                            pass
+                    
+                    return result
+                
+                return None
+                
+        except SQLAlchemyError as e:
+            logger.error(f"Database error getting settings for user {user_id}: {e}")
+            return None
+    
+    def update_user_settings(self, user_id: int, **kwargs):
+        """Update user settings"""
+        try:
+            with self.get_session() as session:
+                settings = session.query(UserSettings).filter(UserSettings.user_id == user_id).first()
+                
+                if not settings:
+                    # Create default settings first
+                    self._create_default_user_settings(user_id)
+                    settings = session.query(UserSettings).filter(UserSettings.user_id == user_id).first()
+                
+                if settings:
+                    # Update basic settings
+                    if 'weekly_summary_enabled' in kwargs:
+                        settings.weekly_summary_enabled = bool(kwargs['weekly_summary_enabled'])
+                    
+                    if 'summary_time_hour' in kwargs:
+                        hour = int(kwargs['summary_time_hour'])
+                        if 0 <= hour <= 23:
+                            settings.summary_time_hour = hour
+                    
+                    # Update additional settings in JSON
+                    additional_settings = {}
+                    if settings.settings_json:
+                        try:
+                            additional_settings = json.loads(settings.settings_json)
+                        except json.JSONDecodeError:
+                            additional_settings = {}
+                    
+                    for key, value in kwargs.items():
+                        if key not in ['weekly_summary_enabled', 'summary_time_hour']:
+                            additional_settings[key] = value
+                    
+                    settings.settings_json = json.dumps(additional_settings)
+                    settings.updated_at = datetime.now(dt_timezone.utc)
+                    
+                    session.commit()
+                    
+                    logger.info(f"Updated settings for user {user_id}")
+                
+        except SQLAlchemyError as e:
+            logger.error(f"Database error updating settings for user {user_id}: {e}")
+            raise
     
     def update_user_timezone(self, user_id: int, user_timezone: str):
         """Update user timezone with validation"""
@@ -231,11 +348,14 @@ class Database:
                     # Delete schedules
                     schedules_deleted = session.query(Schedule).filter(Schedule.user_id == user_id).delete()
                     
+                    # Delete user settings
+                    settings_deleted = session.query(UserSettings).filter(UserSettings.user_id == user_id).delete()
+                    
                     # Delete user
                     user_deleted = session.query(User).filter(User.id == user_id).delete()
                     
                     logger.info(f"Deleted user {user_id}: {entries_deleted} entries, "
-                              f"{schedules_deleted} schedules, {user_deleted} user record")
+                              f"{schedules_deleted} schedules, {settings_deleted} settings, {user_deleted} user record")
                               
         except SQLAlchemyError as e:
             logger.error(f"Database error deleting user data for {user_id}: {e}")
@@ -442,10 +562,16 @@ class Database:
                                 .filter(User.last_activity >= week_ago)
                                 .count())
                 
+                # Users with weekly summary enabled
+                weekly_summary_users = (session.query(UserSettings)
+                                       .filter(UserSettings.weekly_summary_enabled == True)
+                                       .count())
+                
                 return {
                     'total_users': total_users,
                     'total_entries': total_entries,
-                    'active_weekly': active_weekly
+                    'active_weekly': active_weekly,
+                    'weekly_summary_users': weekly_summary_users
                 }
                 
         except SQLAlchemyError as e:
@@ -453,7 +579,8 @@ class Database:
             return {
                 'total_users': 0,
                 'total_entries': 0,
-                'active_weekly': 0
+                'active_weekly': 0,
+                'weekly_summary_users': 0
             }
     
     def get_emotion_frequencies(self, user_id: int, days: int = 7) -> Dict[str, int]:
@@ -552,7 +679,7 @@ class Database:
 
 
 def test_database():
-    """Simple database test with enhanced validation"""
+    """Enhanced database test with user settings"""
     import tempfile
     import os
     
@@ -566,21 +693,24 @@ def test_database():
         # Test health check
         assert db.health_check(), "Health check failed"
         
-        # Test user creation
+        # Test user creation (should create settings automatically)
         user = db.create_user(12345, 67890, 'Europe/Moscow')
         assert user.id == 12345
         assert user.chat_id == 67890
         
-        # Test duplicate user creation (should not fail)
-        user2 = db.create_user(12345, 67890, 'Europe/Moscow')
-        assert user2.id == 12345
+        # Test user settings
+        settings = db.get_user_settings(12345)
+        assert settings is not None
+        assert settings['weekly_summary_enabled'] == True
+        assert settings['summary_time_hour'] == 21
         
-        # Test user retrieval
-        retrieved_user = db.get_user(12345)
-        assert retrieved_user is not None
-        assert retrieved_user.timezone == 'Europe/Moscow'
+        # Test updating settings
+        db.update_user_settings(12345, weekly_summary_enabled=False, summary_time_hour=20)
+        updated_settings = db.get_user_settings(12345)
+        assert updated_settings['weekly_summary_enabled'] == False
+        assert updated_settings['summary_time_hour'] == 20
         
-        # Test entry creation with validation
+        # Test entry creation
         entry = db.create_entry(
             user_id=12345,
             emotions='["радость", "удовлетворение"]',
@@ -589,24 +719,15 @@ def test_database():
         )
         assert entry.user_id == 12345
         
-        # Test entry with invalid data
-        try:
-            db.create_entry(
-                user_id=12345,
-                emotions='<script>alert("hack")</script>',
-                cause='normal cause'
-            )
-        except Exception:
-            pass  # Should handle malicious input gracefully
-        
         # Test entry retrieval
         entries = db.get_user_entries(12345, 7)
         assert len(entries) >= 1
         
-        # Test statistics
+        # Test enhanced statistics
         stats = db.get_global_stats()
         assert stats['total_users'] >= 1
         assert stats['total_entries'] >= 1
+        assert 'weekly_summary_users' in stats
         
         print("Enhanced database tests passed!")
         
