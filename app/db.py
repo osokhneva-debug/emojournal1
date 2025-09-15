@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Database models and access layer for EmoJournal Bot
-SQLite with SQLAlchemy for persistence - Enhanced with user settings
+SQLite with SQLAlchemy for persistence - Enhanced with comprehensive user settings
 """
 
 import os
@@ -61,19 +61,50 @@ class UserSettings(Base):
     
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, unique=True, nullable=False, index=True)
-    weekly_summary_enabled = Column(Boolean, default=True, nullable=False)  # Получать ли еженедельные саммари
-    summary_time_hour = Column(Integer, default=21, nullable=False)  # Час отправки саммари (0-23)
-    settings_json = Column(Text, nullable=True)  # Дополнительные настройки в JSON
+    
+    # Weekly summary settings
+    weekly_summary_enabled = Column(Boolean, default=True, nullable=False)
+    summary_time_hour = Column(Integer, default=21, nullable=False)  # Hour 0-23
+    
+    # Notification preferences
+    ping_frequency = Column(String(20), default='normal', nullable=False)  # 'normal', 'reduced', 'minimal'
+    weekend_pings = Column(Boolean, default=True, nullable=False)  # Ping on weekends
+    
+    # Privacy settings
+    data_retention_days = Column(Integer, default=365, nullable=False)  # How long to keep data
+    
+    # Display preferences
+    preferred_language = Column(String(10), default='ru', nullable=False)
+    emoji_style = Column(String(20), default='default', nullable=False)  # 'default', 'minimal', 'colorful'
+    
+    # Advanced settings (JSON for extensibility)
+    advanced_settings = Column(Text, nullable=True)  # JSON for future features
+    
+    # Metadata
     created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
 
-# Create indexes
+# NEW: Summary delivery tracking
+class SummaryDelivery(Base):
+    __tablename__ = 'summary_deliveries'
+    
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    delivery_date = Column(Date, nullable=False, index=True)  # Date when summary was sent
+    summary_period_days = Column(Integer, default=7, nullable=False)  # Period covered (7, 14, 30, etc.)
+    delivery_type = Column(String(20), default='automatic', nullable=False)  # 'automatic', 'manual'
+    entries_count = Column(Integer, default=0, nullable=False)  # Number of entries included
+    success = Column(Boolean, default=True, nullable=False)  # Whether delivery succeeded
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+
+# Create indexes for performance
 Index('idx_entries_user_date', Entry.user_id, Entry.ts_local)
 Index('idx_schedules_user_date', Schedule.user_id, Schedule.date_local)
 Index('idx_user_settings_user_id', UserSettings.user_id)
+Index('idx_summary_deliveries_user_date', SummaryDelivery.user_id, SummaryDelivery.delivery_date)
 
 class Database:
-    """Database access layer with enhanced security and user settings"""
+    """Database access layer with enhanced user settings and summary tracking"""
     
     def __init__(self, db_url: Optional[str] = None):
         if db_url is None:
@@ -107,7 +138,7 @@ class Database:
         return self.SessionLocal()
     
     def create_user(self, user_id: int, chat_id: int, user_timezone: str = 'Europe/Moscow') -> User:
-        """Create new user with validation and default settings"""
+        """Create new user with validation and comprehensive default settings"""
         # Validate inputs
         if not isinstance(user_id, int) or user_id <= 0:
             raise ValueError("Invalid user_id")
@@ -146,7 +177,7 @@ class Database:
                 session.commit()
                 session.refresh(user)
                 
-                # Create default user settings
+                # Create comprehensive default user settings
                 self._create_default_user_settings(user_id)
                 
                 logger.info(f"Created user {user_id} with chat_id {chat_id}")
@@ -162,7 +193,7 @@ class Database:
             raise
     
     def _create_default_user_settings(self, user_id: int):
-        """Create default settings for new user"""
+        """Create comprehensive default settings for new user"""
         try:
             with self.get_session() as session:
                 # Check if settings already exist
@@ -170,11 +201,28 @@ class Database:
                 if existing_settings:
                     return
                 
+                # Create default advanced settings
+                advanced_settings = {
+                    'onboarding_completed': True,
+                    'first_summary_sent': False,
+                    'preferred_insight_types': ['patterns', 'triggers', 'time_based'],
+                    'custom_emotion_categories': [],
+                    'export_preferences': {
+                        'include_insights': True,
+                        'date_format': 'YYYY-MM-DD'
+                    }
+                }
+                
                 settings = UserSettings(
                     user_id=user_id,
                     weekly_summary_enabled=True,
                     summary_time_hour=21,
-                    settings_json='{}',
+                    ping_frequency='normal',
+                    weekend_pings=True,
+                    data_retention_days=365,
+                    preferred_language='ru',
+                    emoji_style='default',
+                    advanced_settings=json.dumps(advanced_settings, ensure_ascii=False),
                     created_at=datetime.now(dt_timezone.utc),
                     updated_at=datetime.now(dt_timezone.utc)
                 )
@@ -182,7 +230,7 @@ class Database:
                 session.add(settings)
                 session.commit()
                 
-                logger.info(f"Created default settings for user {user_id}")
+                logger.info(f"Created comprehensive default settings for user {user_id}")
                 
         except SQLAlchemyError as e:
             logger.error(f"Error creating default settings for user {user_id}: {e}")
@@ -206,7 +254,7 @@ class Database:
             return None
     
     def get_user_settings(self, user_id: int) -> Optional[Dict[str, Any]]:
-        """Get user settings as dictionary"""
+        """Get user settings as comprehensive dictionary"""
         try:
             with self.get_session() as session:
                 settings = session.query(UserSettings).filter(UserSettings.user_id == user_id).first()
@@ -217,17 +265,30 @@ class Database:
                 
                 if settings:
                     result = {
+                        # Core settings
                         'weekly_summary_enabled': settings.weekly_summary_enabled,
-                        'summary_time_hour': settings.summary_time_hour
+                        'summary_time_hour': settings.summary_time_hour,
+                        'ping_frequency': settings.ping_frequency,
+                        'weekend_pings': settings.weekend_pings,
+                        'data_retention_days': settings.data_retention_days,
+                        'preferred_language': settings.preferred_language,
+                        'emoji_style': settings.emoji_style,
+                        
+                        # Metadata
+                        'created_at': settings.created_at,
+                        'updated_at': settings.updated_at
                     }
                     
-                    # Add additional settings from JSON
-                    if settings.settings_json:
+                    # Add advanced settings from JSON
+                    if settings.advanced_settings:
                         try:
-                            additional_settings = json.loads(settings.settings_json)
-                            result.update(additional_settings)
+                            advanced = json.loads(settings.advanced_settings)
+                            result['advanced'] = advanced
                         except json.JSONDecodeError:
-                            pass
+                            logger.warning(f"Invalid advanced settings JSON for user {user_id}")
+                            result['advanced'] = {}
+                    else:
+                        result['advanced'] = {}
                     
                     return result
                 
@@ -238,7 +299,7 @@ class Database:
             return None
     
     def update_user_settings(self, user_id: int, **kwargs):
-        """Update user settings"""
+        """Update user settings with comprehensive options"""
         try:
             with self.get_session() as session:
                 settings = session.query(UserSettings).filter(UserSettings.user_id == user_id).first()
@@ -249,7 +310,7 @@ class Database:
                     settings = session.query(UserSettings).filter(UserSettings.user_id == user_id).first()
                 
                 if settings:
-                    # Update basic settings
+                    # Update core settings
                     if 'weekly_summary_enabled' in kwargs:
                         settings.weekly_summary_enabled = bool(kwargs['weekly_summary_enabled'])
                     
@@ -258,19 +319,48 @@ class Database:
                         if 0 <= hour <= 23:
                             settings.summary_time_hour = hour
                     
-                    # Update additional settings in JSON
-                    additional_settings = {}
-                    if settings.settings_json:
+                    if 'ping_frequency' in kwargs:
+                        frequency = kwargs['ping_frequency']
+                        if frequency in ['normal', 'reduced', 'minimal']:
+                            settings.ping_frequency = frequency
+                    
+                    if 'weekend_pings' in kwargs:
+                        settings.weekend_pings = bool(kwargs['weekend_pings'])
+                    
+                    if 'data_retention_days' in kwargs:
+                        days = int(kwargs['data_retention_days'])
+                        if 30 <= days <= 3650:  # 1 month to 10 years
+                            settings.data_retention_days = days
+                    
+                    if 'preferred_language' in kwargs:
+                        lang = kwargs['preferred_language']
+                        if lang in ['ru', 'en']:  # Support for future languages
+                            settings.preferred_language = lang
+                    
+                    if 'emoji_style' in kwargs:
+                        style = kwargs['emoji_style']
+                        if style in ['default', 'minimal', 'colorful']:
+                            settings.emoji_style = style
+                    
+                    # Update advanced settings
+                    advanced_settings = {}
+                    if settings.advanced_settings:
                         try:
-                            additional_settings = json.loads(settings.settings_json)
+                            advanced_settings = json.loads(settings.advanced_settings)
                         except json.JSONDecodeError:
-                            additional_settings = {}
+                            advanced_settings = {}
                     
+                    # Handle advanced settings updates
                     for key, value in kwargs.items():
-                        if key not in ['weekly_summary_enabled', 'summary_time_hour']:
-                            additional_settings[key] = value
+                        if key.startswith('advanced_'):
+                            setting_key = key.replace('advanced_', '')
+                            advanced_settings[setting_key] = value
+                        elif key not in ['weekly_summary_enabled', 'summary_time_hour', 'ping_frequency', 
+                                       'weekend_pings', 'data_retention_days', 'preferred_language', 'emoji_style']:
+                            # Store other custom settings in advanced
+                            advanced_settings[key] = value
                     
-                    settings.settings_json = json.dumps(additional_settings)
+                    settings.advanced_settings = json.dumps(advanced_settings, ensure_ascii=False)
                     settings.updated_at = datetime.now(dt_timezone.utc)
                     
                     session.commit()
@@ -336,6 +426,21 @@ class Database:
             logger.error(f"Database error getting active users: {e}")
             return []
     
+    def get_users_for_weekly_summary(self) -> List[User]:
+        """Get users who have weekly summaries enabled"""
+        try:
+            with self.get_session() as session:
+                # Join users with settings to get only those with weekly summaries enabled
+                users = (session.query(User)
+                        .join(UserSettings, User.id == UserSettings.user_id)
+                        .filter(User.paused == False)
+                        .filter(UserSettings.weekly_summary_enabled == True)
+                        .all())
+                return users
+        except SQLAlchemyError as e:
+            logger.error(f"Database error getting users for weekly summary: {e}")
+            return []
+    
     def delete_user_data(self, user_id: int):
         """Delete all data for a user with transaction safety"""
         try:
@@ -348,6 +453,9 @@ class Database:
                     # Delete schedules
                     schedules_deleted = session.query(Schedule).filter(Schedule.user_id == user_id).delete()
                     
+                    # Delete summary deliveries
+                    summaries_deleted = session.query(SummaryDelivery).filter(SummaryDelivery.user_id == user_id).delete()
+                    
                     # Delete user settings
                     settings_deleted = session.query(UserSettings).filter(UserSettings.user_id == user_id).delete()
                     
@@ -355,7 +463,8 @@ class Database:
                     user_deleted = session.query(User).filter(User.id == user_id).delete()
                     
                     logger.info(f"Deleted user {user_id}: {entries_deleted} entries, "
-                              f"{schedules_deleted} schedules, {settings_deleted} settings, {user_deleted} user record")
+                              f"{schedules_deleted} schedules, {summaries_deleted} summaries, "
+                              f"{settings_deleted} settings, {user_deleted} user record")
                               
         except SQLAlchemyError as e:
             logger.error(f"Database error deleting user data for {user_id}: {e}")
@@ -448,6 +557,58 @@ class Database:
         except SQLAlchemyError as e:
             logger.error(f"Database error creating entry for user {user_id}: {e}")
             raise
+    
+    # NEW: Summary delivery tracking methods
+    def record_summary_delivery(self, user_id: int, period_days: int = 7, 
+                               delivery_type: str = 'automatic', entries_count: int = 0, 
+                               success: bool = True):
+        """Record that a summary was delivered to user"""
+        try:
+            with self.get_session() as session:
+                import zoneinfo
+                
+                # Get user timezone for local date
+                user = session.query(User).filter(User.id == user_id).first()
+                if user:
+                    try:
+                        tz = zoneinfo.ZoneInfo(user.timezone)
+                        local_date = datetime.now(tz).date()
+                    except Exception:
+                        local_date = datetime.now().date()
+                else:
+                    local_date = datetime.now().date()
+                
+                delivery = SummaryDelivery(
+                    user_id=user_id,
+                    delivery_date=local_date,
+                    summary_period_days=period_days,
+                    delivery_type=delivery_type,
+                    entries_count=entries_count,
+                    success=success,
+                    created_at=datetime.now(dt_timezone.utc)
+                )
+                
+                session.add(delivery)
+                session.commit()
+                
+                logger.info(f"Recorded summary delivery for user {user_id}: {period_days} days, {entries_count} entries")
+                
+        except SQLAlchemyError as e:
+            logger.error(f"Database error recording summary delivery for user {user_id}: {e}")
+    
+    def get_last_summary_delivery(self, user_id: int, delivery_type: str = 'automatic') -> Optional[SummaryDelivery]:
+        """Get the last summary delivery for user"""
+        try:
+            with self.get_session() as session:
+                return (session.query(SummaryDelivery)
+                       .filter(SummaryDelivery.user_id == user_id)
+                       .filter(SummaryDelivery.delivery_type == delivery_type)
+                       .filter(SummaryDelivery.success == True)
+                       .order_by(SummaryDelivery.created_at.desc())
+                       .first())
+        except SQLAlchemyError as e:
+            logger.error(f"Database error getting last summary delivery for user {user_id}: {e}")
+            return None
     
     def get_user_entries(self, user_id: int, days: int = 7) -> List[Entry]:
         """Get user entries from last N days with validation"""
@@ -567,11 +728,19 @@ class Database:
                                        .filter(UserSettings.weekly_summary_enabled == True)
                                        .count())
                 
+                # Summary deliveries this week
+                week_start = datetime.now(dt_timezone.utc) - timedelta(days=7)
+                summaries_this_week = (session.query(SummaryDelivery)
+                                      .filter(SummaryDelivery.created_at >= week_start)
+                                      .filter(SummaryDelivery.success == True)
+                                      .count())
+                
                 return {
                     'total_users': total_users,
                     'total_entries': total_entries,
                     'active_weekly': active_weekly,
-                    'weekly_summary_users': weekly_summary_users
+                    'weekly_summary_users': weekly_summary_users,
+                    'summaries_this_week': summaries_this_week
                 }
                 
         except SQLAlchemyError as e:
@@ -580,7 +749,8 @@ class Database:
                 'total_users': 0,
                 'total_entries': 0,
                 'active_weekly': 0,
-                'weekly_summary_users': 0
+                'weekly_summary_users': 0,
+                'summaries_this_week': 0
             }
     
     def get_emotion_frequencies(self, user_id: int, days: int = 7) -> Dict[str, int]:
@@ -679,7 +849,7 @@ class Database:
 
 
 def test_database():
-    """Enhanced database test with user settings"""
+    """Enhanced database test with user settings and summary tracking"""
     import tempfile
     import os
     
@@ -698,17 +868,29 @@ def test_database():
         assert user.id == 12345
         assert user.chat_id == 67890
         
-        # Test user settings
+        # Test comprehensive user settings
         settings = db.get_user_settings(12345)
         assert settings is not None
         assert settings['weekly_summary_enabled'] == True
         assert settings['summary_time_hour'] == 21
+        assert settings['ping_frequency'] == 'normal'
+        assert settings['weekend_pings'] == True
+        assert 'advanced' in settings
         
-        # Test updating settings
-        db.update_user_settings(12345, weekly_summary_enabled=False, summary_time_hour=20)
+        # Test updating comprehensive settings
+        db.update_user_settings(12345, 
+                               weekly_summary_enabled=False, 
+                               summary_time_hour=20,
+                               ping_frequency='reduced',
+                               weekend_pings=False,
+                               advanced_custom_feature=True)
+        
         updated_settings = db.get_user_settings(12345)
         assert updated_settings['weekly_summary_enabled'] == False
         assert updated_settings['summary_time_hour'] == 20
+        assert updated_settings['ping_frequency'] == 'reduced'
+        assert updated_settings['weekend_pings'] == False
+        assert updated_settings['advanced']['custom_feature'] == True
         
         # Test entry creation
         entry = db.create_entry(
@@ -719,6 +901,12 @@ def test_database():
         )
         assert entry.user_id == 12345
         
+        # Test summary delivery recording
+        db.record_summary_delivery(12345, period_days=7, entries_count=5)
+        last_delivery = db.get_last_summary_delivery(12345)
+        assert last_delivery is not None
+        assert last_delivery.entries_count == 5
+        
         # Test entry retrieval
         entries = db.get_user_entries(12345, 7)
         assert len(entries) >= 1
@@ -728,6 +916,16 @@ def test_database():
         assert stats['total_users'] >= 1
         assert stats['total_entries'] >= 1
         assert 'weekly_summary_users' in stats
+        assert 'summaries_this_week' in stats
+        
+        # Test users for weekly summary
+        weekly_users = db.get_users_for_weekly_summary()
+        assert len(weekly_users) == 0  # User has weekly summary disabled
+        
+        # Re-enable and test again
+        db.update_user_settings(12345, weekly_summary_enabled=True)
+        weekly_users = db.get_users_for_weekly_summary()
+        assert len(weekly_users) >= 1
         
         print("Enhanced database tests passed!")
         
