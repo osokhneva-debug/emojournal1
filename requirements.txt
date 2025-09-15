@@ -12,13 +12,10 @@ alembic==1.13.0
 APScheduler==3.10.4
 
 # Web server for webhooks  
-aiohttp==3.9.1
+aiohttp==3.9.5
 
 # Data processing
 pandas==2.1.4
-
-# Timezone support (backport for older Python)
-backports.zoneinfo==0.2.1; python_version<"3.9"
 
 # Development and testing
 pytest==7.4.3
