@@ -2,7 +2,7 @@
 """
 Internationalization texts for EmoJournal Bot (Russian language)
 Based on established emotion theories and NVC principles
-Enhanced with emotion grouping
+Fixed with correct emotion grouping
 """
 
 class Texts:
@@ -125,7 +125,7 @@ class Texts:
     
     SKIP_RESPONSE = "Хорошо, сегодня больше не побеспокою 😊"
     
-    # Weekly summary template (legacy - теперь используется новая логика в analysis.py)
+    # Weekly summary template (legacy - сейчас используется новая логика в analysis.py)
     WEEKLY_SUMMARY_TEMPLATE = """
 📊 <b>Твоя неделя в эмоциях</b>
 
@@ -151,13 +151,10 @@ class Texts:
 Используй /note чтобы записать свою первую эмоцию, или просто отвечай на мои ежедневные вопросы в 9:00, 13:00, 17:00 и 21:00!
     """
     
-    # Emotion categories (based on Plutchik + NVC + Russell's model)
-    # Обновленные категории с новой группировкой
+    # Emotion categories (сохраняем для совместимости с интерфейсом)
     EMOTION_CATEGORIES = {
-        # 🌱 Эмоции восстановления и роста
         'joy': {
             'name': 'Радость/Удовлетворение',
-            'group': 'growth',
             'emotions': [
                 'радость', 'счастье', 'восторг', 'удовлетворение', 
                 'благодарность', 'вдохновение', 'эйфория', 'блаженство',
@@ -165,8 +162,7 @@ class Texts:
             ]
         },
         'interest': {
-            'name': 'Интерес/Любопытство',
-            'group': 'growth',
+            'name': 'Интерес/Любопытство', 
             'emotions': [
                 'интерес', 'любопытство', 'увлечённость', 'восхищение',
                 'предвкушение', 'азарт', 'энтузиазм', 'воодушевление'
@@ -174,17 +170,13 @@ class Texts:
         },
         'calm': {
             'name': 'Спокойствие/Умиротворение',
-            'group': 'growth',
             'emotions': [
                 'спокойствие', 'умиротворение', 'расслабленность', 'безмятежность',
                 'принятие', 'гармония', 'баланс', 'центрированность', 'покой'
             ]
         },
-        
-        # 🌪 Эмоции напряжения и сигнала
         'anxiety': {
             'name': 'Тревога/Беспокойство',
-            'group': 'tension',
             'emotions': [
                 'тревога', 'беспокойство', 'нервозность', 'волнение',
                 'напряжение', 'страх', 'паника', 'опасения', 'встревоженность'
@@ -192,7 +184,6 @@ class Texts:
         },
         'sadness': {
             'name': 'Грусть/Печаль',
-            'group': 'tension',
             'emotions': [
                 'грусть', 'печаль', 'тоска', 'уныние', 'разочарование',
                 'сожаление', 'меланхолия', 'горе', 'скорбь', 'подавленность'
@@ -200,7 +191,6 @@ class Texts:
         },
         'anger': {
             'name': 'Злость/Раздражение',
-            'group': 'tension',
             'emotions': [
                 'злость', 'раздражение', 'гнев', 'возмущение', 'обида',
                 'фрустрация', 'досада', 'негодование', 'ярость', 'недовольство'
@@ -208,7 +198,6 @@ class Texts:
         },
         'shame': {
             'name': 'Стыд/Вина',
-            'group': 'tension',
             'emotions': [
                 'стыд', 'вина', 'смущение', 'неловкость', 'сожаление',
                 'самокритика', 'раскаяние', 'угрызения совести'
@@ -216,40 +205,17 @@ class Texts:
         },
         'fatigue': {
             'name': 'Усталость/Истощение',
-            'group': 'tension',
             'emotions': [
                 'усталость', 'истощение', 'вялость', 'апатия', 
                 'безразличие', 'выгорание', 'изнеможение', 'опустошённость'
             ]
         },
-        
-        # ⚖ Нейтральные / прочие состояния
         'excitement': {
             'name': 'Оживление/Энергия',
-            'group': 'neutral',
             'emotions': [
                 'оживление', 'энергия', 'бодрость', 'живость',
                 'активность', 'подъём', 'драйв', 'динамизм'
             ]
-        }
-    }
-    
-    # Новые группы эмоций для отображения в интерфейсе
-    EMOTION_GROUPS = {
-        'growth': {
-            'name': '🌱 Эмоции восстановления и роста',
-            'description': 'Эмоции, которые питают и восстанавливают',
-            'categories': ['joy', 'interest', 'calm']
-        },
-        'tension': {
-            'name': '🌪 Эмоции напряжения и сигнала',
-            'description': 'Эмоции, которые сигнализируют о потребностях',
-            'categories': ['anxiety', 'sadness', 'anger', 'shame', 'fatigue']
-        },
-        'neutral': {
-            'name': '⚖ Нейтральные / прочие состояния',
-            'description': 'Прочие эмоциональные состояния',
-            'categories': ['excitement']
         }
     }
     
@@ -264,36 +230,31 @@ class Texts:
         "Что показалось особенно важным?"
     ]
     
-    # Enhanced insight templates for new grouping system
+    # Insight templates for weekly analysis
     INSIGHT_TEMPLATES = {
-        'balanced_week': """
-⚖️ <b>Сбалансированная неделя:</b> эмоции роста и напряжения в равновесии. 
-Это показывает, что ты проживаешь жизнь полно - и радости, и вызовы.
+        'work_stress_evening': """
+💡 <b>Замечание:</b> Часто тревога проявляется вечером, а триггер связан с работой. 
+Возможно, стоит попробовать короткий ритуал "переключения" после рабочего дня?
         """,
         
-        'growth_dominant': """
-✨ <b>Отличный баланс!</b> Преобладают эмоции восстановления и роста.
-Обрати внимание на то, что способствует таким состояниям.
+        'morning_anxiety': """
+💡 <b>Замечание:</b> Тревога часто появляется утром. 
+Может помочь 2-минутная дыхательная практика или планирование дня с вечера.
         """,
         
-        'tension_week': """
-🤗 <b>Непростая неделя:</b> много эмоций напряжения. 
-Это нормально - они тоже важны для понимания себя и сигнализируют о потребностях.
+        'weekend_joy': """
+💡 <b>Замечание:</b> По выходным настроение заметно лучше. 
+Что из "выходного режима" можно привнести в будни?
         """,
         
-        'growth_triggers': """
-💡 <b>Что тебя вдохновляет:</b> обрати внимание на ситуации, которые приносят эмоции роста.
-Можешь ли ты создать больше таких моментов?
+        'social_energy': """
+💡 <b>Замечание:</b> Общение с людьми часто даёт энергию. 
+Возможно, стоит планировать больше социальных активностей?
         """,
         
-        'tension_patterns': """
-🛡️ <b>Зоны внимания:</b> стоит подумать о стратегиях работы с повторяющимися стрессорами.
-Какая поддержка тебе нужна?
-        """,
-        
-        'emotional_awareness': """
-🎯 <b>Растущая осознанность:</b> ты всё лучше замечаешь свои эмоциональные паттерны.
-Это ценный навык для саморегуляции.
+        'evening_fatigue': """
+💡 <b>Замечание:</b> Усталость накапливается к вечеру. 
+Короткие перерывы в течение дня могут помочь сохранить энергию.
         """
     }
     
@@ -412,18 +373,6 @@ def get_emotion_by_category(category: str):
     return texts.EMOTION_CATEGORIES.get(category, {}).get('emotions', [])
 
 
-def get_emotions_by_group(group: str):
-    """Get all emotions for a specific group (growth/tension/neutral)"""
-    texts = Texts()
-    emotions = []
-    
-    for category_key, category_data in texts.EMOTION_CATEGORIES.items():
-        if category_data.get('group') == group:
-            emotions.extend(category_data.get('emotions', []))
-    
-    return emotions
-
-
 def format_emotion_list(emotions: list, max_length: int = 100):
     """Format emotion list for display with length limit"""
     if not emotions:
@@ -456,7 +405,7 @@ def get_time_period_text(hour: int):
 
 
 def generate_insight(top_emotions: list, top_triggers: list, peak_hour: int):
-    """Generate contextual insight based on patterns (legacy function)"""
+    """Generate contextual insight based on patterns"""
     texts = Texts()
     
     # Convert to simple lists if tuples
@@ -473,54 +422,34 @@ def generate_insight(top_emotions: list, top_triggers: list, peak_hour: int):
     # Pattern matching for insights
     if any('тревога' in e or 'беспокойство' in e for e in emotions):
         if 6 <= peak_hour < 12:
-            return texts.INSIGHT_TEMPLATES.get('morning_anxiety', '')
+            return texts.INSIGHT_TEMPLATES['morning_anxiety']
         elif any('работа' in t for t in triggers) and 16 <= peak_hour < 20:
-            return texts.INSIGHT_TEMPLATES.get('work_stress_evening', '')
+            return texts.INSIGHT_TEMPLATES['work_stress_evening']
     
     if any('усталость' in e or 'истощение' in e for e in emotions):
         if 18 <= peak_hour < 23:
-            return texts.INSIGHT_TEMPLATES.get('evening_fatigue', '')
+            return texts.INSIGHT_TEMPLATES['evening_fatigue']
     
     if any('радость' in e or 'счастье' in e for e in emotions):
-        return texts.INSIGHT_TEMPLATES.get('weekend_joy', '')
+        # Check if weekend pattern exists (simplified)
+        return texts.INSIGHT_TEMPLATES['weekend_joy']
     
     if any('люди' in t or 'друзья' in t or 'семья' in t for t in triggers):
-        return texts.INSIGHT_TEMPLATES.get('social_energy', '')
+        return texts.INSIGHT_TEMPLATES['social_energy']
     
     return ""  # No specific insight
-
-
-def get_emotion_group_name(group_key: str) -> str:
-    """Get display name for emotion group"""
-    texts = Texts()
-    return texts.EMOTION_GROUPS.get(group_key, {}).get('name', group_key)
-
-
-def get_emotion_group_description(group_key: str) -> str:
-    """Get description for emotion group"""
-    texts = Texts()
-    return texts.EMOTION_GROUPS.get(group_key, {}).get('description', '')
 
 
 if __name__ == "__main__":
     # Test some functions
     texts = Texts()
     
-    print("Emotion groups:")
-    for group_key, group_data in texts.EMOTION_GROUPS.items():
-        print(f"- {group_data['name']}: {len(group_data['categories'])} categories")
-        
-    print("\nEmotion categories with groups:")
+    print("Emotion categories:")
     for category, data in texts.EMOTION_CATEGORIES.items():
-        group = data.get('group', 'unknown')
-        print(f"- {data['name']} ({group}): {len(data['emotions'])} emotions")
+        print(f"- {data['name']}: {len(data['emotions'])} emotions")
     
     print(f"\nRandom emotion prompt: {get_random_emotion_prompt()}")
     print(f"Random context prompt: {get_random_context_prompt()}")
-    
-    # Test new grouping functions
-    growth_emotions = get_emotions_by_group('growth')
-    print(f"\nGrowth emotions: {len(growth_emotions)} total")
     
     # Test formatting
     test_emotions = [("радость", 5), ("тревога", 3), ("усталость", 2)]
