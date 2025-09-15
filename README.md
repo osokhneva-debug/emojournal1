@@ -1,17 +1,18 @@
 # EmoJournal Telegram Bot
 
-🎭 **Emotion tracking bot with scientific approach and random scheduling**
+🎭 **Emotion tracking bot with scientific approach and fixed scheduling**
 
-EmoJournal helps users track emotions 4 times daily with intelligent random scheduling (≥2h intervals) and provides weekly insights based on established psychological models.
+EmoJournal helps users track emotions 4 times daily at fixed intervals (9:00, 13:00, 17:00, 21:00) and provides weekly insights based on established psychological models.
 
 ## Features
 
-- **Smart Scheduling**: 4 daily check-ins with random timing between 09:00-23:00 
+- **Fixed Scheduling**: 4 daily check-ins at predictable times: 9:00, 13:00, 17:00, 21:00
 - **Scientific Approach**: Based on Russell's Circumplex, Plutchik's Wheel, NVC principles
 - **Privacy-First**: Local SQLite storage, full data export, complete deletion
 - **Weekly Analytics**: Emotion patterns, trigger analysis, time-based insights
 - **Russian Language**: Fully localized interface and emotion vocabulary
 - **Production Ready**: Webhook mode, persistent scheduling, graceful restarts
+- **Works with Any Data**: Summary available from the first emotion entry
 
 ## Theoretical Foundation
 
@@ -123,9 +124,10 @@ Fork this repository or create new one with these files:
 |---------|-------------|
 | `/start` | Register and start emotion tracking |
 | `/help` | Show help and scientific background |
-| `/timezone` | Set your timezone (IANA format) |
-| `/summary` | Get weekly/monthly emotion summary |  
+| `/note` | Record emotion right now |
+| `/summary` | Get weekly/monthly emotion summary (works with any amount of data) |  
 | `/export` | Download your data as CSV |
+| `/timezone` | Set your timezone (IANA format) |
 | `/pause` | Pause daily notifications |
 | `/resume` | Resume daily notifications |
 | `/delete_me` | Permanently delete all your data |
@@ -136,10 +138,10 @@ Fork this repository or create new one with these files:
 ```
 app/
 ├── main.py          # Main bot logic and handlers
-├── scheduler.py     # Random scheduling with persistence  
+├── scheduler.py     # Fixed scheduling (9:00, 13:00, 17:00, 21:00)
 ├── db.py           # SQLAlchemy models and database access
 ├── i18n.py         # Russian texts and emotion categories
-└── analysis.py     # Weekly insights and CSV export
+└── analysis.py     # Weekly insights and CSV export (works with any data)
 
 data/
 ├── emojournal.db   # SQLite database
@@ -148,16 +150,18 @@ data/
 
 ## Scheduling Algorithm
 
-Generates 4 daily slots with guaranteed ≥2h spacing:
+Generates 4 daily fixed slots:
 
-1. Convert 09:00-23:00 window to minutes (540-1380)
-2. Iteratively sample random minutes with distance validation
-3. Create APScheduler jobs with user timezone
-4. Persist jobs to survive application restarts
+1. **Morning**: 09:00
+2. **Afternoon**: 13:00  
+3. **Evening**: 17:00
+4. **Night**: 21:00
+
+This provides predictable check-ins throughout the day while maintaining consistent 4-hour intervals.
 
 ```python
-# Example generated times
-[time(10, 23), time(13, 47), time(17, 12), time(21, 35)]
+# Fixed times generated
+[time(9, 0), time(13, 0), time(17, 0), time(21, 0)]
 ```
 
 ## Database Schema
@@ -264,7 +268,7 @@ export LOG_LEVEL=DEBUG
 
 # Check specific components
 python -c "from app.db import test_database; test_database()"
-python -c "from app.scheduler import test_random_time_generation; test_random_time_generation()"
+python -c "from app.scheduler import test_fixed_time_generation; test_fixed_time_generation()"
 ```
 
 ## Contributing
