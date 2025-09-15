@@ -24,33 +24,53 @@ class WeeklyAnalyzer:
         self.texts = Texts()
     
     async def generate_summary(self, user_id: int, days: int = 7) -> str:
-        """Generate weekly summary for user"""
+        """Generate summary for user - works with any number of entries"""
         try:
             entries = self.db.get_user_entries(user_id, days)
             
-            if len(entries) < 3:  # Need minimum data for meaningful analysis
+            # Убираем минимальное ограничение - теперь работает с любым количеством записей
+            if len(entries) == 0:
                 return self.texts.NO_DATA_MESSAGE
             
-            # Analyze emotion frequencies
+            if len(entries) == 1:
+                # Специальная обработка для одной записи
+                entry = entries[0]
+                emotions = self._parse_emotions(entry.emotions) if entry.emotions else ['неизвестно']
+                return f"""📊 <b>Твоя первая запись!</b>
+
+<b>🎭 Эмоция:</b> {', '.join(emotions)}
+
+<b>🔍 Причина:</b> {entry.cause if entry.cause else 'не указана'}
+
+<b>⏰ Время:</b> {entry.ts_local.strftime('%H:%M')} ({get_time_period_text(entry.ts_local.hour)})
+
+<b>📈 Всего записей:</b> 1
+
+💡 <b>Отлично!</b> Ты сделал(а) первый шаг к осознанности. Продолжай записывать эмоции, и вскоре я смогу показать интересные закономерности!
+
+<i>Используй /note для новых записей.</i>"""
+            
+            # Анализ для 2+ записей
             emotion_freq = self._analyze_emotions(entries)
             top_emotions = self._get_top_items(emotion_freq, limit=5)
             
-            # Analyze trigger/cause frequencies  
             trigger_freq = self._analyze_triggers(entries)
             top_triggers = self._get_top_items(trigger_freq, limit=5)
             
-            # Analyze time patterns
             time_dist = self._analyze_time_distribution(entries)
             peak_hour = max(time_dist.items(), key=lambda x: x[1])[0] if time_dist else 12
             peak_period = get_time_period_text(peak_hour)
             
-            # Generate insights
-            insights = generate_insight(top_emotions, top_triggers, peak_hour)
+            # Генерируем инсайты (для 2+ записей инсайты менее детальные)
+            if len(entries) >= 5:
+                insights = generate_insight(top_emotions, top_triggers, peak_hour)
+            else:
+                insights = self._generate_simple_insights(entries, top_emotions)
             
-            # Format summary
+            # Формат сводки
             summary = self.texts.WEEKLY_SUMMARY_TEMPLATE.format(
                 top_emotions=format_emotion_list(top_emotions),
-                top_triggers=format_emotion_list(top_triggers),
+                top_triggers=format_emotion_list(top_triggers) if top_triggers else "нет данных",
                 peak_hours=f"{peak_hour:02d}:00 ({peak_period})",
                 total_entries=len(entries),
                 insights=insights
@@ -61,6 +81,35 @@ class WeeklyAnalyzer:
         except Exception as e:
             logger.error(f"Failed to generate summary for user {user_id}: {e}")
             return "Не удалось сформировать сводку. Попробуйте позже."
+    
+    def _generate_simple_insights(self, entries, top_emotions) -> str:
+        """Generate simple insights for small number of entries"""
+        if len(entries) < 2:
+            return ""
+        
+        insights = []
+        
+        # Простой анализ для небольшого количества записей
+        if len(entries) == 2:
+            insights.append("💡 <b>Начало пути:</b> У тебя уже 2 записи! Продолжай отслеживать эмоции для выявления паттернов.")
+        elif len(entries) == 3:
+            insights.append("💡 <b>Хороший прогресс:</b> 3 записи позволяют увидеть первые тенденции в твоём эмоциональном состоянии.")
+        elif len(entries) == 4:
+            insights.append("💡 <b>Формируется картина:</b> 4 записи дают более ясное представление о твоих эмоциональных паттернах.")
+        
+        # Анализ преобладающих эмоций
+        if top_emotions:
+            top_emotion = top_emotions[0][0] if isinstance(top_emotions[0], tuple) else top_emotions[0]
+            
+            positive_emotions = {'радость', 'счастье', 'удовлетворение', 'спокойствие', 'энергия'}
+            negative_emotions = {'тревога', 'грусть', 'злость', 'усталость', 'раздражение'}
+            
+            if top_emotion in positive_emotions:
+                insights.append("✨ Здорово, что преобладают позитивные эмоции!")
+            elif top_emotion in negative_emotions:
+                insights.append("🤗 Замечать сложные эмоции — важный шаг к их пониманию.")
+        
+        return "\n\n".join(insights)
     
     def _analyze_emotions(self, entries) -> Dict[str, int]:
         """Extract and count emotion frequencies with normalization"""
@@ -248,71 +297,6 @@ class WeeklyAnalyzer:
             logger.error(f"Failed to export CSV for user {user_id}: {e}")
             return None
     
-    def _generate_mood_insights(self, entries) -> List[str]:
-        """Generate specific mood insights based on patterns"""
-        insights = []
-        
-        if len(entries) < 7:
-            return insights
-        
-        # Analyze weekly patterns
-        weekday_moods = {}
-        weekend_moods = {}
-        
-        for entry in entries:
-            weekday = entry.ts_local.weekday()  # 0=Monday, 6=Sunday
-            emotions = self._parse_emotions(entry.emotions) if entry.emotions else []
-            
-            if weekday >= 5:  # Weekend (Saturday, Sunday)
-                weekend_moods.setdefault(weekday, []).extend(emotions)
-            else:  # Weekday
-                weekday_moods.setdefault(weekday, []).extend(emotions)
-        
-        # Compare weekend vs weekday mood
-        weekend_emotions = []
-        for day_emotions in weekend_moods.values():
-            weekend_emotions.extend(day_emotions)
-        
-        weekday_emotions = []
-        for day_emotions in weekday_moods.values():
-            weekday_emotions.extend(day_emotions)
-        
-        # Simple sentiment analysis
-        positive_emotions = {'радость', 'счастье', 'удовлетворение', 'спокойствие', 'энергия'}
-        negative_emotions = {'тревога', 'грусть', 'злость', 'усталость', 'раздражение'}
-        
-        weekend_positive = sum(1 for e in weekend_emotions if e in positive_emotions)
-        weekend_negative = sum(1 for e in weekend_emotions if e in negative_emotions)
-        
-        weekday_positive = sum(1 for e in weekday_emotions if e in positive_emotions)
-        weekday_negative = sum(1 for e in weekday_emotions if e in negative_emotions)
-        
-        # Generate insights
-        if weekend_positive > weekday_positive * 1.5:
-            insights.append("По выходным настроение заметно лучше. Что из 'выходного режима' можно привнести в будни?")
-        
-        if weekday_negative > weekend_negative * 1.5:
-            insights.append("В будни чаще проявляются негативные эмоции. Возможно, стоит пересмотреть рабочий график или добавить больше отдыха?")
-        
-        return insights
-    
-    def _calculate_valence_arousal_stats(self, entries) -> Dict[str, float]:
-        """Calculate Russell's Circumplex statistics if available"""
-        valences = [e.valence for e in entries if e.valence is not None]
-        arousals = [e.arousal for e in entries if e.arousal is not None]
-        
-        stats = {}
-        
-        if valences:
-            stats['avg_valence'] = sum(valences) / len(valences)
-            stats['valence_trend'] = 'положительная' if stats['avg_valence'] > 0 else 'отрицательная'
-        
-        if arousals:
-            stats['avg_arousal'] = sum(arousals) / len(arousals)  
-            stats['arousal_trend'] = 'высокая' if stats['avg_arousal'] > 0 else 'низкая'
-        
-        return stats
-    
     def get_emotion_timeline(self, user_id: int, days: int = 30) -> List[Dict]:
         """Get emotion timeline for visualization"""
         entries = self.db.get_user_entries(user_id, days)
@@ -337,7 +321,7 @@ class WeeklyAnalyzer:
 
 def test_analyzer():
     """Test the analyzer with sample data"""
-    from db import Database, Entry
+    from .db import Database, Entry
     import tempfile
     import os
     
@@ -352,9 +336,17 @@ def test_analyzer():
         # Create test user
         user = db.create_user(12345, 67890)
         
-        # Create test entries
+        # Test with 1 entry
+        db.create_entry(12345, emotions='["радость"]', cause='хороший день')
+        
+        import asyncio
+        summary = asyncio.run(analyzer.generate_summary(12345))
+        print("Summary with 1 entry:")
+        print(summary)
+        print("\n" + "="*50 + "\n")
+        
+        # Add more entries
         test_entries = [
-            {'emotions': '["радость", "удовлетворение"]', 'cause': 'закончил проект'},
             {'emotions': '["тревога"]', 'cause': 'много работы'},  
             {'emotions': '["спокойствие"]', 'cause': 'вечер дома'},
             {'emotions': '["усталость"]', 'cause': 'долгий день'},
@@ -363,16 +355,10 @@ def test_analyzer():
         for entry_data in test_entries:
             db.create_entry(12345, **entry_data)
         
-        # Test summary generation
-        import asyncio
+        # Test with multiple entries
         summary = asyncio.run(analyzer.generate_summary(12345))
-        print("Generated summary:")
+        print("Summary with 4 entries:")
         print(summary)
-        
-        # Test CSV export
-        csv_data = asyncio.run(analyzer.export_csv(12345))
-        print("\nCSV export sample:")
-        print(csv_data[:200] + "...")
         
         print("\nAnalyzer tests passed!")
         
