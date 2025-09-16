@@ -31,6 +31,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ДОБАВЬТЕ ЭТИ СТРОКИ ДЛЯ ДЕТАЛЬНОГО ЛОГИРОВАНИЯ WEBHOOK
+logging.getLogger("telegram").setLevel(logging.DEBUG)
+logging.getLogger("httpx").setLevel(logging.INFO)
+logging.getLogger("aiohttp").setLevel(logging.INFO)
+
 class UserStateManager:
     """Простое управление состояниями пользователей с автоочисткой"""
     
@@ -1163,30 +1168,100 @@ class EmoJournalBot:
         from aiohttp.web_request import Request
         
         async def webhook_handler(request: Request):
-            """Handle incoming webhook requests"""
+            """Handle incoming webhook requests - ENHANCED WITH DETAILED LOGGING"""
             try:
+                # Логируем КАЖДЫЙ входящий запрос
+                client_ip = request.remote or 'unknown'
+                logger.info(f"=== WEBHOOK REQUEST FROM {client_ip} ===")
+                
+                # Получаем тело запроса
                 body = await request.text()
-                update_data = json.loads(body)
-                update = Update.de_json(update_data, application.bot)
+                logger.info(f"Webhook body length: {len(body)} chars")
+                logger.info(f"Webhook body preview: {body[:200]}...")
                 
-                logger.debug(f"Received webhook update: {update.update_id}")
+                if not body:
+                    logger.warning("Empty webhook body received")
+                    return web.Response(status=200, text="Empty body")
                 
-                # Process update
-                await application.process_update(update)
+                # Парсим JSON
+                try:
+                    update_data = json.loads(body)
+                    logger.info(f"Parsed JSON successfully. Keys: {list(update_data.keys())}")
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse JSON: {e}")
+                    return web.Response(status=400, text="Invalid JSON")
                 
-                return web.Response(status=200)
+                # Создаем Update объект
+                try:
+                    update = Update.de_json(update_data, application.bot)
+                    logger.info(f"Created Update object: ID={update.update_id}")
+                    
+                    # Детальная информация об обновлении
+                    if update.message:
+                        msg = update.message
+                        logger.info(f"Message from user {msg.from_user.id} (@{msg.from_user.username}): '{msg.text}'")
+                    elif update.callback_query:
+                        cb = update.callback_query
+                        logger.info(f"Callback from user {cb.from_user.id}: '{cb.data}'")
+                    else:
+                        logger.info(f"Other update type: {type(update)}")
+                        
+                except Exception as e:
+                    logger.error(f"Failed to create Update object: {e}")
+                    return web.Response(status=500, text="Update creation failed")
+                
+                # Обрабатываем обновление
+                try:
+                    logger.info(f"Processing update {update.update_id}...")
+                    await application.process_update(update)
+                    logger.info(f"Successfully processed update {update.update_id}")
+                except Exception as e:
+                    logger.error(f"Error processing update {update.update_id}: {e}")
+                    # Не возвращаем ошибку, чтобы Telegram не повторял запрос
+                
+                logger.info(f"=== WEBHOOK REQUEST COMPLETED ===")
+                return web.Response(status=200, text="OK")
                 
             except Exception as e:
-                logger.error(f"Webhook error: {e}")
-                return web.Response(status=500)
+                logger.error(f"Unexpected webhook error: {e}")
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()}")
+                return web.Response(status=500, text=f"Error: {e}")
         
         async def health_handler(request: Request):
-            """Health check endpoint"""
-            return web.Response(text="OK", status=200)
+            """Health check endpoint - ENHANCED"""
+            try:
+                # Проверяем что бот жив
+                bot_info = await application.bot.get_me()
+                logger.info(f"Health check: Bot @{bot_info.username} is alive")
+                
+                return web.Response(
+                    text=f"OK - Bot @{bot_info.username} is running", 
+                    status=200
+                )
+            except Exception as e:
+                logger.error(f"Health check failed: {e}")
+                return web.Response(text=f"Health check failed: {e}", status=500)
         
         async def root_handler(request: Request):
-            """Root page handler"""
-            return web.Response(text="EmoJournal Bot is running", status=200)
+            """Root page handler - ENHANCED"""
+            try:
+                bot_info = await application.bot.get_me()
+                status_info = {
+                    "status": "running",
+                    "bot_username": bot_info.username,
+                    "bot_id": bot_info.id,
+                    "webhook_url": webhook_url
+                }
+                return web.Response(
+                    text=f"EmoJournal Bot is running\n{status_info}", 
+                    status=200
+                )
+            except Exception as e:
+                return web.Response(
+                    text=f"EmoJournal Bot - Status unknown: {e}", 
+                    status=200
+                )
         
         # Create web application
         app = web.Application()
