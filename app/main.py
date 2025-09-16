@@ -2,6 +2,7 @@
 """
 EmoJournal Telegram Bot - Main Application
 Emotion tracking bot with interactive summaries and automatic weekly reports
+FIXED: Integrated scheduler with bot for automatic daily pings
 """
 
 import logging
@@ -94,7 +95,10 @@ class UserStateManager:
 class EmoJournalBot:
     def __init__(self):
         self.db = Database()
-        self.scheduler = FixedScheduler(self.db)
+        
+        # ИСПРАВЛЕНИЕ: Передаем ссылку на бота в scheduler
+        self.scheduler = FixedScheduler(self.db, bot_instance=self)
+        
         self.texts = Texts()
         self.analyzer = WeeklyAnalyzer(self.db)
         
@@ -105,6 +109,9 @@ class EmoJournalBot:
         self.bot_token = self._get_env_var('TELEGRAM_BOT_TOKEN')
         self.webhook_url = self._get_env_var('WEBHOOK_URL')
         self.port = int(os.getenv('PORT', '10000'))
+        
+        # ИСПРАВЛЕНИЕ: Создаем Bot instance для scheduler
+        self.bot = Bot(token=self.bot_token)
     
     def _get_env_var(self, name: str) -> str:
         value = os.getenv(name)
@@ -157,9 +164,13 @@ class EmoJournalBot:
             user = self.db.get_user(user_id)
             if not user:
                 user = self.db.create_user(user_id, chat_id)
-                # Start daily scheduling for new user (асинхронно, не блокируем ответ)
-                asyncio.create_task(self.scheduler.start_user_schedule(user_id))
-                logger.info(f"Created new user {user_id}")
+                # ИСПРАВЛЕНИЕ: Запускаем scheduler для нового пользователя
+                await self.scheduler.start_user_schedule(user_id)
+                logger.info(f"Created new user {user_id} and started scheduling")
+            else:
+                # ИСПРАВЛЕНИЕ: Для существующих пользователей тоже проверяем scheduling
+                await self.scheduler.start_user_schedule(user_id)
+                logger.info(f"Restarted scheduling for existing user {user_id}")
             
             # Set bot commands menu (только один раз)
             if not hasattr(self, '_commands_set'):
@@ -247,8 +258,8 @@ class EmoJournalBot:
                 await update.message.reply_text(
                     f"Часовой пояс установлен: {tz_validated}"
                 )
-                # Reschedule with new timezone (асинхронно)
-                asyncio.create_task(self.scheduler.start_user_schedule(user_id))
+                # ИСПРАВЛЕНИЕ: Перезапускаем scheduling с новым timezone
+                await self.scheduler.start_user_schedule(user_id)
             except Exception:
                 await update.message.reply_text(
                     "Неверный часовой пояс. Используйте формат IANA, например: Europe/Moscow, Asia/Yekaterinburg"
@@ -395,7 +406,7 @@ class EmoJournalBot:
         
         try:
             self.db.update_user_paused(user_id, True)
-            asyncio.create_task(self.scheduler.stop_user_schedule(user_id))
+            await self.scheduler.stop_user_schedule(user_id)
             
             await update.message.reply_text("Уведомления приостановлены. Используйте /resume для возобновления.")
         except Exception as e:
@@ -411,7 +422,7 @@ class EmoJournalBot:
         
         try:
             self.db.update_user_paused(user_id, False)
-            asyncio.create_task(self.scheduler.start_user_schedule(user_id))
+            await self.scheduler.start_user_schedule(user_id)
             
             await update.message.reply_text("Уведомления возобновлены!")
         except Exception as e:
@@ -435,6 +446,37 @@ class EmoJournalBot:
         except Exception as e:
             logger.error(f"Error getting stats: {e}")
             await update.message.reply_text("Не удалось получить статистику.")
+    
+    # ИСПРАВЛЕНИЕ: Добавляем метод для отправки пингов из scheduler
+    async def send_emotion_ping(self, user_id: int, chat_id: int) -> bool:
+        """Send emotion ping to user - called by scheduler"""
+        try:
+            keyboard = [
+                [InlineKeyboardButton("Ответить", callback_data=f"respond_{user_id}")],
+                [InlineKeyboardButton("Отложить на 15 мин", callback_data=f"snooze_{user_id}")],
+                [InlineKeyboardButton("Пропустить сегодня", callback_data=f"skip_{user_id}")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            ping_text = """🌟 Как ты сейчас?
+
+Если хочется — выбери 1-2 слова или просто опиши своими словами.
+
+<i>Сам факт, что ты это заметишь и назовёшь, — уже шаг к ясности.</i>"""
+            
+            await self.bot.send_message(
+                chat_id=chat_id,
+                text=ping_text,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+            
+            logger.info(f"Sent emotion ping to user {user_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to send emotion ping to user {user_id}: {e}")
+            return False
     
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle inline keyboard callbacks including new summary and settings callbacks"""
@@ -818,18 +860,18 @@ class EmoJournalBot:
     async def _snooze_ping(self, query, user_id: int):
         """Snooze notification for 15 minutes"""
         await query.edit_message_text("Напомню через 15 минут ⏰")
-        asyncio.create_task(self.scheduler.schedule_snooze(user_id, 15))
+        await self.scheduler.schedule_snooze(user_id, 15)
     
     async def _skip_today(self, query, user_id: int):
         """Skip today's remaining notifications"""
         await query.edit_message_text("Хорошо, сегодня больше не побеспокою")
-        asyncio.create_task(self.scheduler.skip_today(user_id))
+        await self.scheduler.skip_today(user_id)
     
     async def _confirm_delete(self, query, user_id: int):
         """Confirm user data deletion"""
         try:
             self.db.delete_user_data(user_id)
-            asyncio.create_task(self.scheduler.stop_user_schedule(user_id))
+            await self.scheduler.stop_user_schedule(user_id)
             self._clear_user_state(user_id)
             
             await query.edit_message_text(
@@ -968,7 +1010,7 @@ class EmoJournalBot:
             user = self.db.get_user(user_id)
             if not user:
                 user = self.db.create_user(user_id, user_id)  # Use user_id as chat_id
-                asyncio.create_task(self.scheduler.start_user_schedule(user_id))
+                await self.scheduler.start_user_schedule(user_id)
                 logger.info(f"Auto-created user {user_id}")
             
             # Additional validation
@@ -1028,8 +1070,8 @@ class EmoJournalBot:
         """Run bot in webhook mode for Render"""
         application = self.create_application()
         
-        # Start scheduler (асинхронно, не блокируем запуск)
-        asyncio.create_task(self.scheduler.start())
+        # ИСПРАВЛЕНИЕ: Запускаем scheduler ПОСЛЕ создания application
+        await self.scheduler.start()
         
         # Initialize application
         await application.initialize()
