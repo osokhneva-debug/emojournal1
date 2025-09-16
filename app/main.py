@@ -1328,21 +1328,27 @@ class EmoJournalBot:
 
 
 async def main():
-    """Main function"""
-    logger.info("Starting EmoJournal Bot...")
+    """Main function - TEMPORARY POLLING MODE"""
+    logger.info("Starting EmoJournal Bot in POLLING mode...")
     
     bot = EmoJournalBot()
+    application = bot.create_application()
     
     try:
-        application, runner = await bot.run_webhook()
+        # Запускаем scheduler
+        await bot.scheduler.start()
+        logger.info("Scheduler started successfully")
         
-        # Keep running indefinitely
-        await asyncio.Event().wait()
+        # Удаляем webhook и запускаем polling
+        await application.bot.delete_webhook()
+        logger.info("Deleted webhook, starting polling mode...")
+        
+        # Запускаем в режиме polling
+        await application.run_polling(
+            allowed_updates=['message', 'callback_query'],
+            drop_pending_updates=True
+        )
         
     except Exception as e:
         logger.error(f"Failed to start bot: {e}")
         raise
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
