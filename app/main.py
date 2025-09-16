@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 EmoJournal Telegram Bot - Main Application
-Emotion tracking bot with interactive summaries and automatic weekly reports
-FIXED: Integrated scheduler with bot for automatic daily pings
+FIXED: Backward compatible scheduler initialization
 """
 
 import logging
@@ -96,8 +95,17 @@ class EmoJournalBot:
     def __init__(self):
         self.db = Database()
         
-        # ИСПРАВЛЕНИЕ: Передаем ссылку на бота в scheduler
-        self.scheduler = FixedScheduler(self.db, bot_instance=self)
+        # ИСПРАВЛЕНИЕ: Обратная совместимость с scheduler
+        try:
+            # Пробуем новый способ с bot_instance
+            self.scheduler = FixedScheduler(self.db, bot_instance=self)
+            logger.info("Scheduler initialized with bot_instance")
+        except TypeError:
+            # Fallback на старый способ
+            self.scheduler = FixedScheduler(self.db)
+            logger.info("Scheduler initialized in legacy mode")
+            # Устанавливаем bot_instance вручную
+            self.scheduler.bot_instance = self
         
         self.texts = Texts()
         self.analyzer = WeeklyAnalyzer(self.db)
@@ -110,7 +118,7 @@ class EmoJournalBot:
         self.webhook_url = self._get_env_var('WEBHOOK_URL')
         self.port = int(os.getenv('PORT', '10000'))
         
-        # ИСПРАВЛЕНИЕ: Создаем Bot instance для scheduler
+        # Создаем Bot instance для scheduler
         self.bot = Bot(token=self.bot_token)
     
     def _get_env_var(self, name: str) -> str:
@@ -156,6 +164,8 @@ class EmoJournalBot:
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
         
+        logger.info(f"Received /start from user {user_id}")
+        
         # Clear any existing state
         self._clear_user_state(user_id)
         
@@ -164,13 +174,23 @@ class EmoJournalBot:
             user = self.db.get_user(user_id)
             if not user:
                 user = self.db.create_user(user_id, chat_id)
-                # ИСПРАВЛЕНИЕ: Запускаем scheduler для нового пользователя
-                await self.scheduler.start_user_schedule(user_id)
-                logger.info(f"Created new user {user_id} and started scheduling")
+                logger.info(f"Created new user {user_id}")
+                
+                # Запускаем scheduler для нового пользователя
+                try:
+                    await self.scheduler.start_user_schedule(user_id)
+                    logger.info(f"Started scheduling for new user {user_id}")
+                except Exception as e:
+                    logger.error(f"Failed to start scheduling for user {user_id}: {e}")
             else:
-                # ИСПРАВЛЕНИЕ: Для существующих пользователей тоже проверяем scheduling
-                await self.scheduler.start_user_schedule(user_id)
-                logger.info(f"Restarted scheduling for existing user {user_id}")
+                logger.info(f"Existing user {user_id} started bot")
+                
+                # Для существующих пользователей тоже проверяем scheduling
+                try:
+                    await self.scheduler.start_user_schedule(user_id)
+                    logger.info(f"Restarted scheduling for existing user {user_id}")
+                except Exception as e:
+                    logger.error(f"Failed to restart scheduling for user {user_id}: {e}")
             
             # Set bot commands menu (только один раз)
             if not hasattr(self, '_commands_set'):
@@ -191,12 +211,14 @@ class EmoJournalBot:
                 # Устанавливаем команды асинхронно
                 asyncio.create_task(context.bot.set_my_commands(commands))
                 self._commands_set = True
+                logger.info("Set bot commands menu")
             
             # Моментальный ответ пользователю
             await update.message.reply_text(
                 self.texts.ONBOARDING,
                 parse_mode='HTML'
             )
+            logger.info(f"Sent onboarding message to user {user_id}")
             
         except Exception as e:
             logger.error(f"Error in start command for user {user_id}: {e}")
@@ -210,6 +232,7 @@ class EmoJournalBot:
             return
             
         user_id = update.effective_user.id
+        logger.info(f"Received /note from user {user_id}")
         self._clear_user_state(user_id)
         
         keyboard = [
@@ -228,6 +251,9 @@ class EmoJournalBot:
         if not await self._check_rate_limits(update, 'help'):
             return
             
+        user_id = update.effective_user.id
+        logger.info(f"Received /help from user {user_id}")
+        
         await update.message.reply_text(
             self.texts.HELP,
             parse_mode='HTML'
@@ -239,6 +265,7 @@ class EmoJournalBot:
             return
             
         user_id = update.effective_user.id
+        logger.info(f"Received /timezone from user {user_id}")
         
         if context.args:
             tz_name = ' '.join(context.args)
@@ -258,8 +285,12 @@ class EmoJournalBot:
                 await update.message.reply_text(
                     f"Часовой пояс установлен: {tz_validated}"
                 )
-                # ИСПРАВЛЕНИЕ: Перезапускаем scheduling с новым timezone
-                await self.scheduler.start_user_schedule(user_id)
+                # Перезапускаем scheduling с новым timezone
+                try:
+                    await self.scheduler.start_user_schedule(user_id)
+                    logger.info(f"Restarted scheduling for user {user_id} with new timezone")
+                except Exception as e:
+                    logger.error(f"Failed to restart scheduling after timezone change: {e}")
             except Exception:
                 await update.message.reply_text(
                     "Неверный часовой пояс. Используйте формат IANA, например: Europe/Moscow, Asia/Yekaterinburg"
@@ -278,6 +309,7 @@ class EmoJournalBot:
             return
             
         user_id = update.effective_user.id
+        logger.info(f"Received /summary from user {user_id}")
         self._clear_user_state(user_id)
         
         # Show period selection buttons
@@ -307,6 +339,7 @@ class EmoJournalBot:
             return
             
         user_id = update.effective_user.id
+        logger.info(f"Received /settings from user {user_id}")
         
         try:
             # Get current settings
@@ -353,6 +386,7 @@ class EmoJournalBot:
             return
             
         user_id = update.effective_user.id
+        logger.info(f"Received /export from user {user_id}")
         
         try:
             csv_data = await self.analyzer.export_csv(user_id)
@@ -381,6 +415,7 @@ class EmoJournalBot:
             return
             
         user_id = update.effective_user.id
+        logger.info(f"Received /delete_me from user {user_id}")
         
         keyboard = [
             [InlineKeyboardButton("Да, удалить все мои данные", callback_data=f"delete_confirm_{user_id}")],
@@ -403,10 +438,14 @@ class EmoJournalBot:
             return
             
         user_id = update.effective_user.id
+        logger.info(f"Received /pause from user {user_id}")
         
         try:
             self.db.update_user_paused(user_id, True)
-            await self.scheduler.stop_user_schedule(user_id)
+            try:
+                await self.scheduler.stop_user_schedule(user_id)
+            except Exception as e:
+                logger.error(f"Error stopping schedule for user {user_id}: {e}")
             
             await update.message.reply_text("Уведомления приостановлены. Используйте /resume для возобновления.")
         except Exception as e:
@@ -419,10 +458,14 @@ class EmoJournalBot:
             return
             
         user_id = update.effective_user.id
+        logger.info(f"Received /resume from user {user_id}")
         
         try:
             self.db.update_user_paused(user_id, False)
-            await self.scheduler.start_user_schedule(user_id)
+            try:
+                await self.scheduler.start_user_schedule(user_id)
+            except Exception as e:
+                logger.error(f"Error starting schedule for user {user_id}: {e}")
             
             await update.message.reply_text("Уведомления возобновлены!")
         except Exception as e:
@@ -434,6 +477,9 @@ class EmoJournalBot:
         if not await self._check_rate_limits(update, 'stats'):
             return
             
+        user_id = update.effective_user.id
+        logger.info(f"Received /stats from user {user_id}")
+        
         try:
             stats = self.db.get_global_stats()
             await update.message.reply_text(
@@ -447,7 +493,7 @@ class EmoJournalBot:
             logger.error(f"Error getting stats: {e}")
             await update.message.reply_text("Не удалось получить статистику.")
     
-    # ИСПРАВЛЕНИЕ: Добавляем метод для отправки пингов из scheduler
+    # Добавляем метод для отправки пингов из scheduler
     async def send_emotion_ping(self, user_id: int, chat_id: int) -> bool:
         """Send emotion ping to user - called by scheduler"""
         try:
@@ -479,7 +525,7 @@ class EmoJournalBot:
             return False
     
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle inline keyboard callbacks including new summary and settings callbacks"""
+        """Handle inline keyboard callbacks"""
         query = update.callback_query
         
         # Check rate limits for callbacks
@@ -490,6 +536,8 @@ class EmoJournalBot:
         
         data = query.data
         user_id = query.from_user.id
+        
+        logger.info(f"Received callback {data} from user {user_id}")
         
         try:
             if data.startswith("respond_"):
@@ -513,13 +561,13 @@ class EmoJournalBot:
             elif data == "skip_cause":
                 await self._skip_cause_and_finish(query, user_id)
             
-            # NEW: Summary period selection callbacks
+            # Summary period selection callbacks
             elif data.startswith("summary_period_"):
                 await self._handle_summary_period_selection(query, data, user_id)
             elif data == "summary_period_custom":
                 await self._request_custom_period(query, user_id)
             
-            # NEW: Settings callbacks
+            # Settings callbacks
             elif data == "toggle_weekly_summary":
                 await self._toggle_weekly_summary(query, user_id)
             elif data == "change_summary_time":
@@ -860,18 +908,27 @@ class EmoJournalBot:
     async def _snooze_ping(self, query, user_id: int):
         """Snooze notification for 15 minutes"""
         await query.edit_message_text("Напомню через 15 минут ⏰")
-        await self.scheduler.schedule_snooze(user_id, 15)
+        try:
+            await self.scheduler.schedule_snooze(user_id, 15)
+        except Exception as e:
+            logger.error(f"Error scheduling snooze for user {user_id}: {e}")
     
     async def _skip_today(self, query, user_id: int):
         """Skip today's remaining notifications"""
         await query.edit_message_text("Хорошо, сегодня больше не побеспокою")
-        await self.scheduler.skip_today(user_id)
+        try:
+            await self.scheduler.skip_today(user_id)
+        except Exception as e:
+            logger.error(f"Error skipping today for user {user_id}: {e}")
     
     async def _confirm_delete(self, query, user_id: int):
         """Confirm user data deletion"""
         try:
             self.db.delete_user_data(user_id)
-            await self.scheduler.stop_user_schedule(user_id)
+            try:
+                await self.scheduler.stop_user_schedule(user_id)
+            except Exception as e:
+                logger.error(f"Error stopping schedule during delete for user {user_id}: {e}")
             self._clear_user_state(user_id)
             
             await query.edit_message_text(
@@ -890,6 +947,8 @@ class EmoJournalBot:
             
         user_id = update.effective_user.id
         raw_text = update.message.text
+        
+        logger.info(f"Received text message from user {user_id}: {raw_text[:50]}...")
         
         user_state = self._get_user_state(user_id)
         
@@ -942,7 +1001,7 @@ class EmoJournalBot:
                 await update.message.reply_text("Произошла ошибка при сохранении. Попробуйте позже.")
         
         elif user_state.get('state') == 'waiting_for_custom_period':
-            # NEW: User entered custom period for summary
+            # User entered custom period for summary
             try:
                 days = int(raw_text.strip())
                 if not (1 <= days <= 90):
@@ -1010,7 +1069,10 @@ class EmoJournalBot:
             user = self.db.get_user(user_id)
             if not user:
                 user = self.db.create_user(user_id, user_id)  # Use user_id as chat_id
-                await self.scheduler.start_user_schedule(user_id)
+                try:
+                    await self.scheduler.start_user_schedule(user_id)
+                except Exception as e:
+                    logger.error(f"Error starting schedule for new user {user_id}: {e}")
                 logger.info(f"Auto-created user {user_id}")
             
             # Additional validation
@@ -1053,7 +1115,7 @@ class EmoJournalBot:
         application.add_handler(CommandHandler("help", self.help_command))
         application.add_handler(CommandHandler("timezone", self.timezone_command))
         application.add_handler(CommandHandler("summary", self.summary_command))
-        application.add_handler(CommandHandler("settings", self.settings_command))  # NEW
+        application.add_handler(CommandHandler("settings", self.settings_command))
         application.add_handler(CommandHandler("export", self.export_command))
         application.add_handler(CommandHandler("delete_me", self.delete_me_command))
         application.add_handler(CommandHandler("pause", self.pause_command))
@@ -1064,14 +1126,21 @@ class EmoJournalBot:
         application.add_handler(CallbackQueryHandler(self.handle_callback))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text_message))
         
+        logger.info("Created telegram application with all handlers")
         return application
     
     async def run_webhook(self):
         """Run bot in webhook mode for Render"""
+        logger.info("Starting bot in webhook mode...")
+        
         application = self.create_application()
         
-        # ИСПРАВЛЕНИЕ: Запускаем scheduler ПОСЛЕ создания application
-        await self.scheduler.start()
+        # Запускаем scheduler ПОСЛЕ создания application
+        try:
+            await self.scheduler.start()
+            logger.info("Scheduler started successfully")
+        except Exception as e:
+            logger.error(f"Error starting scheduler: {e}")
         
         # Initialize application
         await application.initialize()
@@ -1081,6 +1150,8 @@ class EmoJournalBot:
         webhook_url = self.webhook_url
         if not webhook_url.endswith('/webhook'):
             webhook_url += '/webhook'
+        
+        logger.info(f"Setting webhook to: {webhook_url}")
         
         await application.bot.set_webhook(
             url=webhook_url,
@@ -1097,6 +1168,8 @@ class EmoJournalBot:
                 body = await request.text()
                 update_data = json.loads(body)
                 update = Update.de_json(update_data, application.bot)
+                
+                logger.debug(f"Received webhook update: {update.update_id}")
                 
                 # Process update
                 await application.process_update(update)
@@ -1136,6 +1209,8 @@ class EmoJournalBot:
 
 async def main():
     """Main function"""
+    logger.info("Starting EmoJournal Bot...")
+    
     bot = EmoJournalBot()
     
     try:
