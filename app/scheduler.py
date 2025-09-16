@@ -2,6 +2,7 @@
 """
 Fixed Scheduler for EmoJournal Bot - Enhanced with timezone-aware weekly summaries
 Generates 4 fixed daily slots at 9, 13, 17, 21 hours + weekly summaries per user timezone
+FIXED: Now uses bot_instance for sending messages
 """
 
 import logging
@@ -27,8 +28,10 @@ class FixedScheduler:
     MAX_RETRIES = 3
     RETRY_DELAY = 60  # seconds
     
-    def __init__(self, db):
+    def __init__(self, db, bot_instance=None):
         self.db = db
+        # ИСПРАВЛЕНИЕ: Сохраняем ссылку на экземпляр бота
+        self.bot_instance = bot_instance
         self.scheduler = None
         self.running = False
         
@@ -117,7 +120,7 @@ class FixedScheduler:
         """Retry failed ping with delay"""
         try:
             await asyncio.sleep(self.RETRY_DELAY)
-            await self._send_simple_ping(user_id)
+            await self._send_ping_via_bot_instance(user_id)
             logger.info(f"Successfully retried ping for user {user_id}")
         except Exception as e:
             logger.error(f"Retry ping failed for user {user_id}: {e}")
@@ -242,14 +245,12 @@ class FixedScheduler:
             # Add header for automatic summary
             auto_summary = f"{texts.AUTO_SUMMARY_HEADER}\n\n{summary}"
             
-            # Send via Telegram API
-            bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
-            if not bot_token:
-                logger.error("TELEGRAM_BOT_TOKEN not set")
+            # ИСПРАВЛЕНИЕ: Используем bot_instance вместо создания нового Bot
+            if not self.bot_instance:
+                logger.error("No bot instance available for sending weekly summary")
                 return
             
-            from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
-            bot = Bot(token=bot_token)
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
             
             # Add buttons after summary
             keyboard = [
@@ -259,7 +260,7 @@ class FixedScheduler:
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
-            await bot.send_message(
+            await self.bot_instance.bot.send_message(
                 chat_id=chat_id,
                 text=auto_summary,
                 reply_markup=reply_markup,
@@ -401,7 +402,7 @@ class FixedScheduler:
                 # Schedule ping
                 try:
                     self.scheduler.add_job(
-                        self._send_simple_ping_safe,
+                        self._send_ping_via_bot_instance_safe,
                         'date',
                         run_date=ping_datetime,
                         args=[user_id],
@@ -455,7 +456,7 @@ class FixedScheduler:
             
             try:
                 self.scheduler.add_job(
-                    self._send_simple_ping_safe,
+                    self._send_ping_via_bot_instance_safe,
                     'date',
                     run_date=ping_datetime,
                     args=[user_id],
@@ -496,73 +497,38 @@ class FixedScheduler:
         
         logger.info(f"Generated daily schedules: {success_count} success, {error_count} errors")
     
-    async def _send_simple_ping_safe(self, user_id: int):
+    async def _send_ping_via_bot_instance_safe(self, user_id: int):
         """Safely send ping with comprehensive error handling"""
         try:
-            await self._send_simple_ping(user_id)
+            await self._send_ping_via_bot_instance(user_id)
         except Exception as e:
             logger.error(f"Failed to send ping to user {user_id}: {e}")
             # Don't re-raise to prevent scheduler from stopping
     
-    async def _send_simple_ping(self, user_id: int):
-        """Send emotion ping to user with enhanced error handling"""
-        bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
-        if not bot_token:
-            logger.error("TELEGRAM_BOT_TOKEN not set")
+    async def _send_ping_via_bot_instance(self, user_id: int):
+        """Send emotion ping to user via bot instance"""
+        # ИСПРАВЛЕНИЕ: Используем bot_instance для отправки пингов
+        if not self.bot_instance:
+            logger.error("No bot instance available for sending ping")
             return
         
         try:
-            from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
-            from telegram.error import TelegramError, Forbidden, ChatNotFound
-            
-            bot = Bot(token=bot_token)
-            
             # Check if user still exists and is not paused
             user = self.db.get_user(user_id)
             if not user or user.paused:
                 logger.info(f"User {user_id} is paused or not found, skipping ping")
                 return
             
-            keyboard = [
-                [InlineKeyboardButton("Ответить", callback_data=f"respond_{user_id}")],
-                [InlineKeyboardButton("Отложить на 15 мин", callback_data=f"snooze_{user_id}")],
-                [InlineKeyboardButton("Пропустить сегодня", callback_data=f"skip_{user_id}")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
+            # Use the bot instance method to send ping
+            success = await self.bot_instance.send_emotion_ping(user_id, user.chat_id)
             
-            ping_text = """🌟 Как ты сейчас?
-
-Если хочется — выбери 1-2 слова или просто опиши своими словами.
-
-<i>Сам факт, что ты это заметишь и назовёшь, — уже шаг к ясности.</i>"""
+            if success:
+                logger.info(f"Successfully sent emotion ping to user {user_id}")
+            else:
+                logger.warning(f"Failed to send emotion ping to user {user_id}")
             
-            await bot.send_message(
-                chat_id=user.chat_id,
-                text=ping_text,
-                reply_markup=reply_markup,
-                parse_mode='HTML'
-            )
-            
-            logger.info(f"Sent emotion ping to user {user_id}")
-            
-        except Forbidden:
-            logger.warning(f"Bot was blocked by user {user_id}")
-            # Automatically pause user notifications
-            try:
-                self.db.update_user_paused(user_id, True)
-            except Exception:
-                pass
-        except ChatNotFound:
-            logger.warning(f"Chat not found for user {user_id}")
-            # Automatically pause user notifications
-            try:
-                self.db.update_user_paused(user_id, True)
-            except Exception:
-                pass
-        except TelegramError as e:
-            logger.error(f"Telegram API error sending ping to user {user_id}: {e}")
         except Exception as e:
-            logger.error(f"Unexpected error sending ping to user {user_id}: {e}")
+            logger.error(f"Error in _send_ping_via_bot_instance for user {user_id}: {e}")
     
     async def schedule_snooze(self, user_id: int, minutes: int = 15):
         """Schedule a snoozed ping with validation"""
@@ -583,7 +549,7 @@ class FixedScheduler:
             job_id = f'snooze_{user_id}_{int(snooze_time.timestamp())}'
             
             self.scheduler.add_job(
-                self._send_simple_ping_safe,
+                self._send_ping_via_bot_instance_safe,
                 'date',
                 run_date=snooze_time,
                 args=[user_id],
