@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 EmoJournal Telegram Bot - Main Application
-FIXED: Backward compatible scheduler initialization
+FIXED: Enhanced webhook handling with detailed logging and proper setup
 """
 
 import logging
@@ -31,7 +31,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ДОБАВЬТЕ ЭТИ СТРОКИ ДЛЯ ДЕТАЛЬНОГО ЛОГИРОВАНИЯ WEBHOOK
+# ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ WEBHOOK
 logging.getLogger("telegram").setLevel(logging.DEBUG)
 logging.getLogger("httpx").setLevel(logging.INFO)
 logging.getLogger("aiohttp").setLevel(logging.INFO)
@@ -1135,7 +1135,7 @@ class EmoJournalBot:
         return application
     
     async def run_webhook(self):
-        """Run bot in webhook mode for Render"""
+        """Run bot in webhook mode for Render - ENHANCED VERSION WITH DETAILED DIAGNOSTICS"""
         logger.info("Starting bot in webhook mode...")
         
         application = self.create_application()
@@ -1151,33 +1151,70 @@ class EmoJournalBot:
         await application.initialize()
         await application.start()
         
-        # Set webhook
+        # ИСПРАВЛЕНИЕ: Принудительно удаляем старый webhook
+        try:
+            delete_result = await application.bot.delete_webhook()
+            logger.info(f"Deleted old webhook: {delete_result}")
+            await asyncio.sleep(2)  # Пауза для применения изменений
+        except Exception as e:
+            logger.warning(f"Could not delete old webhook: {e}")
+        
+        # Set new webhook
         webhook_url = self.webhook_url
         if not webhook_url.endswith('/webhook'):
             webhook_url += '/webhook'
         
         logger.info(f"Setting webhook to: {webhook_url}")
         
-        await application.bot.set_webhook(
-            url=webhook_url,
-            allowed_updates=['message', 'callback_query']
-        )
+        # ИСПРАВЛЕНИЕ: Улучшенная установка webhook
+        try:
+            webhook_result = await application.bot.set_webhook(
+                url=webhook_url,
+                allowed_updates=['message', 'callback_query'],
+                drop_pending_updates=True,  # Очищаем накопившиеся обновления
+                max_connections=5
+            )
+            logger.info(f"Webhook set successfully: {webhook_result}")
+        except Exception as e:
+            logger.error(f"Failed to set webhook: {e}")
+            raise
+        
+        # ДОБАВЛЯЕМ: Проверка статуса webhook после установки
+        try:
+            await asyncio.sleep(1)  # Пауза
+            webhook_info = await application.bot.get_webhook_info()
+            logger.info(f"Webhook info after setup:")
+            logger.info(f"  URL: {webhook_info.url}")
+            logger.info(f"  Pending updates: {webhook_info.pending_update_count}")
+            logger.info(f"  Max connections: {webhook_info.max_connections}")
+            if webhook_info.last_error_date:
+                logger.warning(f"  Last error: {webhook_info.last_error_message} at {webhook_info.last_error_date}")
+            else:
+                logger.info("  No webhook errors detected")
+        except Exception as e:
+            logger.warning(f"Could not get webhook info: {e}")
         
         # Create aiohttp web server
         from aiohttp import web
         from aiohttp.web_request import Request
         
         async def webhook_handler(request: Request):
-            """Handle incoming webhook requests - ENHANCED WITH DETAILED LOGGING"""
+            """Handle incoming webhook requests - MAXIMUM ENHANCED LOGGING"""
+            logger.info("!!! WEBHOOK HANDLER CALLED !!!")
+            
             try:
                 # Логируем КАЖДЫЙ входящий запрос
                 client_ip = request.remote or 'unknown'
+                headers = dict(request.headers)
                 logger.info(f"=== WEBHOOK REQUEST FROM {client_ip} ===")
+                logger.info(f"Request method: {request.method}")
+                logger.info(f"Request URL: {request.url}")
+                logger.info(f"Request headers: {headers}")
                 
                 # Получаем тело запроса
                 body = await request.text()
                 logger.info(f"Webhook body length: {len(body)} chars")
-                logger.info(f"Webhook body preview: {body[:200]}...")
+                logger.info(f"Webhook body preview: {body[:300]}...")
                 
                 if not body:
                     logger.warning("Empty webhook body received")
@@ -1187,8 +1224,10 @@ class EmoJournalBot:
                 try:
                     update_data = json.loads(body)
                     logger.info(f"Parsed JSON successfully. Keys: {list(update_data.keys())}")
+                    logger.info(f"Update data: {update_data}")
                 except json.JSONDecodeError as e:
                     logger.error(f"Failed to parse JSON: {e}")
+                    logger.error(f"Raw body: {body}")
                     return web.Response(status=400, text="Invalid JSON")
                 
                 # Создаем Update объект
@@ -1200,14 +1239,17 @@ class EmoJournalBot:
                     if update.message:
                         msg = update.message
                         logger.info(f"Message from user {msg.from_user.id} (@{msg.from_user.username}): '{msg.text}'")
+                        logger.info(f"Chat ID: {msg.chat.id}, Message ID: {msg.message_id}")
                     elif update.callback_query:
                         cb = update.callback_query
                         logger.info(f"Callback from user {cb.from_user.id}: '{cb.data}'")
                     else:
                         logger.info(f"Other update type: {type(update)}")
+                        logger.info(f"Update content: {update}")
                         
                 except Exception as e:
                     logger.error(f"Failed to create Update object: {e}")
+                    logger.error(f"Update data was: {update_data}")
                     return web.Response(status=500, text="Update creation failed")
                 
                 # Обрабатываем обновление
@@ -1217,6 +1259,8 @@ class EmoJournalBot:
                     logger.info(f"Successfully processed update {update.update_id}")
                 except Exception as e:
                     logger.error(f"Error processing update {update.update_id}: {e}")
+                    import traceback
+                    logger.error(f"Traceback: {traceback.format_exc()}")
                     # Не возвращаем ошибку, чтобы Telegram не повторял запрос
                 
                 logger.info(f"=== WEBHOOK REQUEST COMPLETED ===")
@@ -1278,6 +1322,7 @@ class EmoJournalBot:
         
         logger.info(f"Bot started in webhook mode on port {self.port}")
         logger.info(f"Webhook URL: {webhook_url}")
+        logger.info("=== SERVER IS READY TO RECEIVE WEBHOOKS ===")
         
         return application, runner
 
