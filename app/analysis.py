@@ -2,7 +2,7 @@
 """
 Weekly Analysis and Export for EmoJournal Bot
 Generates insights and CSV exports based on user data
-FIXED: Corrected emotion categorization logic
+FIXED: Corrected emotion categorization logic with debug logging
 """
 
 import logging
@@ -26,7 +26,7 @@ class WeeklyAnalyzer:
             'name': '🌱 Эмоции восстановления и роста',
             'emotions': {
                 # Радость/Удовлетворение
-                'радость', 'счастье', 'восторг', 'удовлетворение', 'благодарность', 
+                'радость', 'счастье', 'восторг', 'удовлетворение', 'удовлетворённость', 'благодарность', 
                 'вдохновение', 'эйфория', 'блаженство', 'ликование', 'восхищение', 'умиление',
                 # Интерес/Любопытство
                 'интерес', 'любопытство', 'увлечённость', 'предвкушение', 'азарт', 
@@ -46,7 +46,7 @@ class WeeklyAnalyzer:
                 'грусть', 'печаль', 'тоска', 'уныние', 'разочарование', 'сожаление', 
                 'меланхолия', 'горе', 'скорбь', 'подавленность',
                 # Злость/Раздражение
-                'злость', 'раздражение', 'гнев', 'возмущение', 'обида', 'фрустрация', 
+                'злость', 'раздражение', 'гнев', 'возмущение', 'обида', 'обиженность', 'фрустрация', 
                 'досада', 'негодование', 'ярость', 'недовольство',
                 # Стыд/Вина
                 'стыд', 'вина', 'смущение', 'неловкость', 'самокритика', 'раскаяние', 
@@ -124,27 +124,38 @@ class WeeklyAnalyzer:
             return "Не удалось сформировать сводку. Попробуйте позже."
     
     def _get_emotion_group(self, emotion: str) -> str:
-        """ИСПРАВЛЕНИЕ: Определить группу эмоции по четким спискам"""
+        """ИСПРАВЛЕНИЕ: Определить группу эмоции по четким спискам с отладкой"""
         if not emotion:
+            logger.debug(f"Empty emotion, returning neutral")
             return 'neutral'
         
         # Нормализуем эмоцию
         emotion_normalized = self._normalize_emotion(emotion)
+        logger.debug(f"Original emotion: '{emotion}' -> normalized: '{emotion_normalized}'")
+        
         if not emotion_normalized:
+            logger.debug(f"Emotion normalization failed for: '{emotion}'")
             return 'neutral'
         
         emotion_clean = emotion_normalized.lower().strip()
+        logger.debug(f"Cleaned emotion: '{emotion_clean}'")
         
         # ИСПРАВЛЕНИЕ: Проверяем в каждой группе, используя set для быстрого поиска
         for group_key, group_data in self.EMOTION_GROUPS.items():
             if emotion_clean in group_data['emotions']:
+                logger.debug(f"✅ Found emotion '{emotion_clean}' in group '{group_key}'")
                 return group_key
+            else:
+                logger.debug(f"❌ Emotion '{emotion_clean}' NOT in group '{group_key}' (sample: {list(group_data['emotions'])[:3]}...)")
         
         # Если не найдено - нейтральная
+        logger.warning(f"🚨 Emotion '{emotion_clean}' not found in any group, returning neutral")
         return 'neutral'
     
     def _analyze_emotions_by_groups(self, entries) -> Dict:
-        """Анализ эмоций по новым группам"""
+        """Анализ эмоций по новым группам с расширенным логированием"""
+        logger.info(f"=== ANALYZING {len(entries)} ENTRIES FOR EMOTION GROUPS ===")
+        
         # Группируем эмоции
         grouped_emotions = {
             'growth': defaultdict(int),
@@ -152,14 +163,22 @@ class WeeklyAnalyzer:
             'neutral': defaultdict(int)
         }
         
-        for entry in entries:
+        for i, entry in enumerate(entries):
+            logger.debug(f"Entry {i+1}: emotions='{entry.emotions}', cause='{entry.cause}'")
+            
             if entry.emotions:
                 emotions = self._parse_emotions(entry.emotions)
+                logger.debug(f"  Parsed emotions: {emotions}")
+                
                 for emotion in emotions:
+                    logger.debug(f"  Processing emotion: '{emotion}'")
                     normalized = self._normalize_emotion(emotion)
                     if normalized:
                         group = self._get_emotion_group(normalized)
                         grouped_emotions[group][normalized] += 1
+                        logger.debug(f"  ✅ '{emotion}' -> '{normalized}' -> group '{group}'")
+                    else:
+                        logger.warning(f"  ❌ Failed to normalize emotion: '{emotion}'")
         
         # Формируем результат
         result = {}
@@ -168,6 +187,8 @@ class WeeklyAnalyzer:
             total_count = sum(emotions_in_group.values())
             top_emotions = sorted(emotions_in_group.items(), key=lambda x: x[1], reverse=True)[:5]
             
+            logger.info(f"Group '{group_key}': {total_count} emotions - {emotions_in_group}")
+            
             result[group_key] = {
                 'name': group_info['name'],
                 'total_count': total_count,
@@ -175,6 +196,7 @@ class WeeklyAnalyzer:
                 'top_emotions': top_emotions
             }
         
+        logger.info(f"=== EMOTION ANALYSIS COMPLETE ===")
         return result
     
     def _analyze_triggers_by_groups(self, entries) -> Dict:
@@ -324,12 +346,12 @@ class WeeklyAnalyzer:
             # Try parsing as JSON array
             emotions = json.loads(emotions_str)
             if isinstance(emotions, list):
-                return [str(e).strip().lower() for e in emotions if e]
+                return [str(e).strip() for e in emotions if e]  # НЕ приводим к lower() здесь
         except (json.JSONDecodeError, TypeError):
             pass
         
         # Fall back to plain text parsing
-        return [emotions_str.strip().lower()] if emotions_str.strip() else []
+        return [emotions_str.strip()] if emotions_str.strip() else []
     
     def _normalize_emotion(self, emotion: str) -> Optional[str]:
         """ИСПРАВЛЕНИЕ: Normalize emotion to base form (enhanced Russian stemming)"""
@@ -347,6 +369,7 @@ class WeeklyAnalyzer:
             'радостный': 'радость', 'радостная': 'радость', 'радостное': 'радость', 'радостные': 'радость',
             'счастливый': 'счастье', 'счастливая': 'счастье', 'счастливое': 'счастье', 'счастливые': 'счастье',
             'довольный': 'удовлетворение', 'довольная': 'удовлетворение', 'довольное': 'удовлетворение',
+            'удовлетворённый': 'удовлетворение', 'удовлетворённая': 'удовлетворение',
             
             # Тревога family  
             'тревожный': 'тревога', 'тревожная': 'тревога', 'тревожное': 'тревога', 'тревожные': 'тревога',
@@ -363,11 +386,13 @@ class WeeklyAnalyzer:
             'злой': 'злость', 'злая': 'злость', 'злое': 'злость', 'злые': 'злость',
             'раздражённый': 'раздражение', 'раздражённая': 'раздражение', 'раздраженный': 'раздражение',
             'сердитый': 'злость', 'сердитая': 'злость',
+            'обиженный': 'обида', 'обиженная': 'обида',
             
             # Усталость family
             'усталый': 'усталость', 'усталая': 'усталость', 'усталое': 'усталость',
             'уставший': 'усталость', 'уставшая': 'усталость',
             'измученный': 'истощение', 'измученная': 'истощение',
+            'вялый': 'вялость', 'вялая': 'вялость',
             
             # Спокойствие family
             'спокойный': 'спокойствие', 'спокойная': 'спокойствие', 'спокойное': 'спокойствие',
@@ -380,6 +405,7 @@ class WeeklyAnalyzer:
         
         # Direct mapping
         if emotion in emotion_mapping:
+            logger.debug(f"  Found direct mapping: '{emotion}' -> '{emotion_mapping[emotion]}'")
             return emotion_mapping[emotion]
         
         # ИСПРАВЛЕНИЕ: Улучшенное удаление русских окончаний
@@ -395,9 +421,11 @@ class WeeklyAnalyzer:
                 # Проверяем, есть ли базовая форма в наших эмоциональных группах
                 for group_data in self.EMOTION_GROUPS.values():
                     if base in group_data['emotions']:
+                        logger.debug(f"  Found stemmed match: '{emotion}' -> '{base}'")
                         return base
         
         # Возвращаем как есть, если не смогли нормализовать
+        logger.debug(f"  No normalization found, returning as-is: '{emotion}'")
         return emotion
     
     def _analyze_time_distribution(self, entries) -> Dict[int, int]:
@@ -500,7 +528,7 @@ def test_analyzer():
         user = db.create_user(12345, 67890)
         
         # Test emotion grouping
-        test_emotions = ['радость', 'тревога', 'спокойствие', 'усталость', 'возмущение', 'апатия']
+        test_emotions = ['радость', 'тревога', 'спокойствие', 'усталость', 'возмущение', 'апатия', 'удовлетворение', 'вялость', 'обида']
         
         print("Testing emotion grouping:")
         for emotion in test_emotions:
@@ -514,6 +542,9 @@ def test_analyzer():
             {'emotions': '["спокойствие"]', 'cause': 'вечер дома'},
             {'emotions': '["усталость"]', 'cause': 'долгий день'},
             {'emotions': '["возмущение"]', 'cause': 'пробка на дороге'},
+            {'emotions': '["удовлетворение"]', 'cause': 'хорошо поел'},
+            {'emotions': '["вялость"]', 'cause': 'плохой сон'},
+            {'emotions': '["обида"]', 'cause': 'неприятный разговор'},
         ]
         
         for entry_data in test_entries:
